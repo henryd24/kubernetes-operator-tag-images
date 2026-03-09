@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rollout-ecr-tagger-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rollout-ecr-tagger-controller
+  namespace: rollout-ecr-tagger-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rollout-ecr-tagger-role
+rules:
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["argoproj.io"]
+  resources: ["rollouts"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rollout-ecr-tagger-rolebinding
+subjects:
+- kind: ServiceAccount
+  name: rollout-ecr-tagger-controller
+  namespace: rollout-ecr-tagger-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rollout-ecr-tagger-role
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollout-ecr-tagger-controller
+  namespace: rollout-ecr-tagger-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rollout-ecr-tagger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rollout-ecr-tagger
+    spec:
+      serviceAccountName: rollout-ecr-tagger-controller
+      containers:
+      - name: manager
+        image: henda24/rollout-ecr-tagger:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --leader-elect=true
+        env:
+        - name: AWS_REGION
+          value: us-east-1
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10

@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: test-app
+  namespace: rollout-test
+  annotations:
+    ecr-tagger.io/environment: staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: app
+        image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:v1.0.0
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+  strategy:
+    canary:
+      steps:
+      - pause: {duration: 1m}
