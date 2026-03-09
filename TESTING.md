@@ -27,10 +27,10 @@ kubectl rollout status deployment/argo-rollouts -n argo-rollouts --timeout=5m
 docker login  # Ingresa credenciales de Docker Hub
 
 # Build de la imagen
-make docker-build IMAGE=henryd24/rollout-ecr-tagger:0.1.0
+make docker-build IMAGE=henda24/rollout-ecr-tagger:0.1.0
 
 # Push a Docker Hub
-make docker-push IMAGE=henryd24/rollout-ecr-tagger:0.1.0
+make docker-push IMAGE=henda24/rollout-ecr-tagger:0.1.0
 
 # Opcionalmente, usa 'latest'
 make docker-build
@@ -65,7 +65,7 @@ EOF
 
 # Crear rol IAM con la política
 aws iam create-role --role-name rollout-ecr-tagger-role \
-  --assume-role-policy-document '{...}'  # Ver docs de IRSA
+  --assume-role-policy-document '{...}'
 
 # Asociar rol al ServiceAccount
 kubectl annotate serviceaccount rollout-ecr-tagger-controller \

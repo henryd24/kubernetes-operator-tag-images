@@ -41,13 +41,13 @@ go run ./cmd/main.go --leader-elect=false
 
 ```bash
 make build
-make docker-build IMAGE=henryd24/rollout-ecr-tagger:0.1.0
-make docker-push IMAGE=henryd24/rollout-ecr-tagger:0.1.0
+make docker-build IMAGE=henda24/rollout-ecr-tagger:0.1.0
+make docker-push IMAGE=henda24/rollout-ecr-tagger:0.1.0
 ```
 
 ## Deploy
 
-1. Actualiza la imagen en `config/operator.yaml` (o deja `henryd24/rollout-ecr-tagger:latest`).
+1. Actualiza la imagen en `config/operator.yaml` (o deja `henda24/rollout-ecr-tagger:latest`).
 2. Aplica el manifiesto:
 
 ```bash
