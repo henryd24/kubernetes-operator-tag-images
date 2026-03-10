@@ -37,6 +37,15 @@ roleRef:
   kind: ClusterRole
   name: rollout-ecr-tagger-role
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rollout-ecr-tagger-config
+  namespace: rollout-ecr-tagger-system
+data:
+  AWS_REGION: "us-east-1"
+  TARGET_ROLE_ARN: "arn:aws:iam::CUENTA_ECR:role/Role-To-Assume"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,9 +68,9 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect=true
-        env:
-        - name: AWS_REGION
-          value: us-east-1
+        envFrom:
+        - configMapRef:
+            name: rollout-ecr-tagger-config
         resources:
           requests:
             cpu: 50m

@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 var ecrRegistryRegex = regexp.MustCompile(`^([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$`)
@@ -120,7 +124,9 @@ func (f *Factory) ForRegion(ctx context.Context, region string) (Tagger, error) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if existing, ok := f.clients[region]; ok {
+	targetRoleARN := os.Getenv("TARGET_ROLE_ARN")
+	cacheKey := region + "-" + targetRoleARN
+	if existing, ok := f.clients[cacheKey]; ok {
 		return existing, nil
 	}
 
@@ -129,8 +135,14 @@ func (f *Factory) ForRegion(ctx context.Context, region string) (Tagger, error) 
 		return nil, fmt.Errorf("load aws config for region %s: %w", region, err)
 	}
 
+	if targetRoleARN != "" {
+		stsClient := sts.NewFromConfig(cfg)
+		provider := stscreds.NewAssumeRoleProvider(stsClient, targetRoleARN)
+		cfg.Credentials = aws.NewCredentialsCache(provider)
+	}
+
 	tagger := New(ecr.NewFromConfig(cfg))
-	f.clients[region] = tagger
+	f.clients[cacheKey] = tagger
 	return tagger, nil
 }
 
