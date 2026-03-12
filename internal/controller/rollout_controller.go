@@ -51,6 +51,10 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	healthy, observedGeneration := rolloutHealthy(rollout)
 	if !healthy {
+		generation := rollout.GetGeneration()
+		if observedGeneration > 0 && observedGeneration < generation {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -164,11 +168,27 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func rolloutHealthy(obj *unstructured.Unstructured) (bool, int64) {
 	phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 	observedGeneration, _, _ := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	generation := obj.GetGeneration()
 
-	if strings.EqualFold(phase, "Healthy") {
-		return true, observedGeneration
+	if !strings.EqualFold(phase, "Healthy") {
+		return false, observedGeneration
 	}
-	return false, observedGeneration
+
+	if observedGeneration == 0 || observedGeneration != generation {
+		return false, observedGeneration
+	}
+
+	paused, found, _ := unstructured.NestedBool(obj.Object, "spec", "paused")
+	if found && paused {
+		return false, observedGeneration
+	}
+
+	pauseConditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "pauseConditions")
+	if found && len(pauseConditions) > 0 {
+		return false, observedGeneration
+	}
+
+	return true, observedGeneration
 }
 
 func firstContainerImage(obj *unstructured.Unstructured) (string, error) {

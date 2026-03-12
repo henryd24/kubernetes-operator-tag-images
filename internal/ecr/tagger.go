@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 )
 
 var ecrRegistryRegex = regexp.MustCompile(`^([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$`)
@@ -87,6 +88,9 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationRepos
 			ImageManifest:  manifest,
 			ImageTag:       &tag,
 		}); err != nil {
+			if isImageAlreadyExists(err) {
+				continue
+			}
 			return fmt.Errorf("put image with tag %s: %w", tag, err)
 		}
 	}
@@ -109,6 +113,11 @@ func (a *awsTagger) TagExists(ctx context.Context, repository string, tag string
 	}
 
 	return len(res.Images) > 0, nil
+}
+
+func isImageAlreadyExists(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "ImageAlreadyExistsException"
 }
 
 type Factory struct {
