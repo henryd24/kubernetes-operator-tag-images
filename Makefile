@@ -28,3 +28,12 @@ deploy:
 .PHONY: undeploy
 undeploy:
 	kubectl delete -f config/operator.yaml --ignore-not-found=true
+
+.PHONY: test-docker-k3s
+test-docker-k3s:
+	$(eval TEMP_IMAGE=$(subst :latest,:test,$(IMAGE)))
+	docker buildx build --platform linux/amd64 -t $(TEMP_IMAGE) --load .
+	docker save $(TEMP_IMAGE) -o ./rollout-ecr-tagger.tar
+	sudo k3s ctr images import ./rollout-ecr-tagger.tar
+	sudo k3s ctr images ls | grep $(TEMP_IMAGE)
+	rm -f rollout-ecr-tagger.tar

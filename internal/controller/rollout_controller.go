@@ -164,10 +164,18 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(rollout).
 		Complete(r)
 }
+func readObservedGeneration(obj *unstructured.Unstructured) int64 {
+	if s, found, _ := unstructured.NestedString(obj.Object, "status", "observedGeneration"); found && s != "" {
+		n, _ := strconv.ParseInt(s, 10, 64)
+		return n
+	}
+	n, _, _ := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	return n
+}
 
 func rolloutHealthy(obj *unstructured.Unstructured) (bool, int64) {
 	phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
-	observedGeneration, _, _ := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	observedGeneration := readObservedGeneration(obj)
 	generation := obj.GetGeneration()
 
 	if !strings.EqualFold(phase, "Healthy") {

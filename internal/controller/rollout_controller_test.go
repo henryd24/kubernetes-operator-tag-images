@@ -57,6 +57,7 @@ func TestRolloutHealthy(t *testing.T) {
 			"observedGeneration": int64(4),
 		},
 	}}
+	obj.SetGeneration(4)
 
 	healthy, observedGeneration := rolloutHealthy(obj)
 	if !healthy {

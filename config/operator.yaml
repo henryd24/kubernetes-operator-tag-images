@@ -64,7 +64,7 @@ spec:
       serviceAccountName: rollout-ecr-tagger-controller
       containers:
       - name: manager
-        image: henda24/rollout-ecr-tagger:latest
+        image: henda24/rollout-ecr-tagger:v0.3.0
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect=true
