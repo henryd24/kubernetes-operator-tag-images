@@ -27,11 +27,12 @@ type ImageRef struct {
 	Tag        string
 	Digest     string
 	Region     string
+	AccountId  string
 }
 
 type Tagger interface {
-	Retag(ctx context.Context, source ImageRef, destinationRepository string, tags []string) error
-	TagExists(ctx context.Context, repository string, tag string) (bool, error)
+	Retag(ctx context.Context, source ImageRef, destinationAccountId string, destinationRepository string, tags []string) error
+	TagExists(ctx context.Context, repository string, accountId string, tag string) (bool, error)
 }
 
 type client interface {
@@ -47,7 +48,7 @@ func New(client client) Tagger {
 	return &awsTagger{client: client}
 }
 
-func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationRepository string, tags []string) error {
+func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccountId string, destinationRepository string, tags []string) error {
 	if len(tags) == 0 {
 		return errors.New("no destination tags were provided")
 	}
@@ -68,6 +69,7 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationRepos
 			"application/vnd.oci.image.manifest.v1+json",
 			"application/vnd.docker.distribution.manifest.v2+json",
 		},
+		RegistryId: &source.AccountId,
 	})
 	if err != nil {
 		return fmt.Errorf("batch get image from ecr: %w", err)
@@ -87,6 +89,7 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationRepos
 			RepositoryName: &destinationRepository,
 			ImageManifest:  manifest,
 			ImageTag:       &tag,
+			RegistryId:     &destinationAccountId,
 		}); err != nil {
 			if isImageAlreadyExists(err) {
 				continue
@@ -98,7 +101,7 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationRepos
 	return nil
 }
 
-func (a *awsTagger) TagExists(ctx context.Context, repository string, tag string) (bool, error) {
+func (a *awsTagger) TagExists(ctx context.Context, repository string, accountId string, tag string) (bool, error) {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
 		return false, errors.New("tag is empty")
@@ -107,6 +110,7 @@ func (a *awsTagger) TagExists(ctx context.Context, repository string, tag string
 	res, err := a.client.BatchGetImage(ctx, &ecr.BatchGetImageInput{
 		RepositoryName: &repository,
 		ImageIds:       []types.ImageIdentifier{{ImageTag: &tag}},
+		RegistryId:     &accountId,
 	})
 	if err != nil {
 		return false, fmt.Errorf("check existing tag %s: %w", tag, err)
@@ -169,8 +173,8 @@ func ParseImageRef(image string) (ImageRef, error) {
 		if len(repoDigest) != 2 {
 			return ImageRef{}, fmt.Errorf("image %q has invalid digest format", image)
 		}
-		region, _ := regionFromRegistry(registry)
-		return ImageRef{Registry: registry, Repository: repoDigest[0], Digest: repoDigest[1], Region: region}, nil
+		accountId, region := regionFromRegistry(registry)
+		return ImageRef{Registry: registry, Repository: repoDigest[0], Digest: repoDigest[1], AccountId: accountId, Region: region}, nil
 	}
 
 	index := strings.LastIndex(repoAndRef, ":")
@@ -184,14 +188,14 @@ func ParseImageRef(image string) (ImageRef, error) {
 		return ImageRef{}, fmt.Errorf("image %q has empty repository or tag", image)
 	}
 
-	region, _ := regionFromRegistry(registry)
-	return ImageRef{Registry: registry, Repository: repository, Tag: tag, Region: region}, nil
+	accountId, region := regionFromRegistry(registry)
+	return ImageRef{Registry: registry, Repository: repository, Tag: tag, AccountId: accountId, Region: region}, nil
 }
 
-func regionFromRegistry(registry string) (string, bool) {
+func regionFromRegistry(registry string) (string, string) {
 	matches := ecrRegistryRegex.FindStringSubmatch(registry)
 	if len(matches) != 3 {
-		return "", false
+		return "", ""
 	}
-	return matches[2], true
+	return matches[1], matches[2]
 }

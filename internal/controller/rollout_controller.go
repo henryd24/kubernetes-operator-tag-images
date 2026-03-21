@@ -20,6 +20,7 @@ import (
 const (
 	envAnnotationKey                = "ecr-tagger.io/environment"
 	repositoryOverrideAnnotationKey = "ecr-tagger.io/repository"
+	accountIDOverrideAnnotationKey  = "ecr-tagger.io/account-id"
 	lastTaggedImageAnnotationKey    = "ecr-tagger.io/last-tagged-image"
 	lastTaggedGenAnnotationKey      = "ecr-tagger.io/last-tagged-generation"
 )
@@ -93,6 +94,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		destinationRepo = parsedImage.Repository
 	}
 
+	accountID := annotations[accountIDOverrideAnnotationKey]
+	if accountID == "" {
+		accountID = parsedImage.AccountId
+	}
+
 	region := parsedImage.Region
 	if region == "" {
 		region = r.DefaultRegion
@@ -122,7 +128,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	deploymentTag := fmt.Sprintf("%s-%s", sanitizeTagValue(environment), sanitizeTagValue(tagSuffix))
 	activeTag := fmt.Sprintf("active-%s", sanitizeTagValue(environment))
 
-	deploymentTagExists, err := tagger.TagExists(ctx, destinationRepo, deploymentTag)
+	deploymentTagExists, err := tagger.TagExists(ctx, destinationRepo, accountID, deploymentTag)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("check deployment tag existence: %w", err)
 	}
@@ -134,7 +140,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("deployment tag already exists, skipping deploymentTag update", "deploymentTag", deploymentTag, "repository", destinationRepo)
 	}
 
-	if err := tagger.Retag(ctx, parsedImage, destinationRepo, tagsToApply); err != nil {
+	if err := tagger.Retag(ctx, parsedImage, accountID, destinationRepo, tagsToApply); err != nil {
 		log.Error(err, "unable to tag image in ECR", "image", image, "region", region)
 		r.Recorder.Eventf(rollout, "Warning", "ECRTagFailed", "Failed to tag image %s in %s: %v", image, region, err)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
