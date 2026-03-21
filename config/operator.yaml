@@ -62,9 +62,16 @@ spec:
         app.kubernetes.io/name: rollout-ecr-tagger
     spec:
       serviceAccountName: rollout-ecr-tagger-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: manager
-        image: henda24/rollout-ecr-tagger:v0.3.0
+        image: henda24/rollout-ecr-tagger:v0.4.0
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect=true
@@ -90,3 +97,9 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          privileged: false
+          capabilities:
+            drop: ["ALL"]
