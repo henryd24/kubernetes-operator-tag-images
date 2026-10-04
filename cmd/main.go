@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,20 +17,32 @@ import (
 	"github.com/henryd24/kubernetes-operator-tag-images/internal/ecr"
 )
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	var (
-		metricsAddr          string
-		probeAddr            string
-		enableLeaderElection bool
+		metricsAddr             string
+		probeAddr               string
+		enableLeaderElection    bool
+		maxConcurrentReconciles int
+		showVersion             bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true, "Enable leader election for controller manager.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 1, "Maximum number of Rollouts reconciled in parallel.")
+	flag.BoolVar(&showVersion, "version", false, "Print the operator version and exit.")
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -42,6 +55,8 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "ecr-rollout-tagger-operator",
+		// Safe because the process exits right after the manager stops; speeds up failover.
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		ctrl.Log.WithName("setup").Error(err, "unable to start manager")
@@ -57,6 +72,8 @@ func main() {
 		Recorder:      mgr.GetEventRecorderFor("rollout-ecr-tagger"),
 		OperatorName:  "rollout-ecr-tagger",
 		DefaultRegion: os.Getenv("AWS_REGION"),
+
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.WithName("setup").Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
@@ -71,7 +88,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.WithName("setup").Info("starting manager")
+	ctrl.Log.WithName("setup").Info("starting manager", "version", version)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.WithName("setup").Error(err, "problem running manager")
 		os.Exit(1)

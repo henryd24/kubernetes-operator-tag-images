@@ -18,7 +18,18 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-var ecrRegistryRegex = regexp.MustCompile(`^([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$`)
+// ecrRegistryRegex matches ECR private registry hostnames, including FIPS
+// (dkr.ecr-fips), China (amazonaws.com.cn) and dual-stack (dkr-ecr.<region>.on.aws) endpoints.
+var ecrRegistryRegex = regexp.MustCompile(`^([0-9]{12})\.(?:dkr\.ecr(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?|dkr-ecr\.([a-z0-9-]+)\.on\.aws)$`)
+
+// acceptedManifestMediaTypes lists the manifest types the tagger can copy. Manifest
+// lists / OCI indexes are included so multi-arch images can be retagged.
+var acceptedManifestMediaTypes = []string{
+	"application/vnd.oci.image.manifest.v1+json",
+	"application/vnd.docker.distribution.manifest.v2+json",
+	"application/vnd.oci.image.index.v1+json",
+	"application/vnd.docker.distribution.manifest.list.v2+json",
+}
 
 // ImageRef contains the parsed components of an image URI.
 type ImageRef struct {
@@ -28,6 +39,11 @@ type ImageRef struct {
 	Digest     string
 	Region     string
 	AccountId  string
+}
+
+// IsECR reports whether the image registry is an ECR private registry.
+func (r ImageRef) IsECR() bool {
+	return r.AccountId != ""
 }
 
 type Tagger interface {
@@ -63,22 +79,20 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccou
 	}
 
 	res, err := a.client.BatchGetImage(ctx, &ecr.BatchGetImageInput{
-		RepositoryName: &source.Repository,
-		ImageIds:       []types.ImageIdentifier{imageID},
-		AcceptedMediaTypes: []string{
-			"application/vnd.oci.image.manifest.v1+json",
-			"application/vnd.docker.distribution.manifest.v2+json",
-		},
-		RegistryId: &source.AccountId,
+		RepositoryName:     &source.Repository,
+		ImageIds:           []types.ImageIdentifier{imageID},
+		AcceptedMediaTypes: acceptedManifestMediaTypes,
+		RegistryId:         &source.AccountId,
 	})
 	if err != nil {
 		return fmt.Errorf("batch get image from ecr: %w", err)
 	}
 	if len(res.Images) == 0 || res.Images[0].ImageManifest == nil {
-		return fmt.Errorf("source image not found in repository %s", source.Repository)
+		return fmt.Errorf("source image not found in repository %s%s", source.Repository, describeFailures(res.Failures))
 	}
 
 	manifest := res.Images[0].ImageManifest
+	mediaType := res.Images[0].ImageManifestMediaType
 	for _, tag := range tags {
 		tag := strings.TrimSpace(tag)
 		if tag == "" {
@@ -86,10 +100,11 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccou
 		}
 
 		if _, err := a.client.PutImage(ctx, &ecr.PutImageInput{
-			RepositoryName: &destinationRepository,
-			ImageManifest:  manifest,
-			ImageTag:       &tag,
-			RegistryId:     &destinationAccountId,
+			RepositoryName:         &destinationRepository,
+			ImageManifest:          manifest,
+			ImageManifestMediaType: mediaType,
+			ImageTag:               &tag,
+			RegistryId:             &destinationAccountId,
 		}); err != nil {
 			if isImageAlreadyExists(err) {
 				continue
@@ -108,15 +123,27 @@ func (a *awsTagger) TagExists(ctx context.Context, repository string, accountId 
 	}
 
 	res, err := a.client.BatchGetImage(ctx, &ecr.BatchGetImageInput{
-		RepositoryName: &repository,
-		ImageIds:       []types.ImageIdentifier{{ImageTag: &tag}},
-		RegistryId:     &accountId,
+		RepositoryName:     &repository,
+		ImageIds:           []types.ImageIdentifier{{ImageTag: &tag}},
+		AcceptedMediaTypes: acceptedManifestMediaTypes,
+		RegistryId:         &accountId,
 	})
 	if err != nil {
 		return false, fmt.Errorf("check existing tag %s: %w", tag, err)
 	}
 
 	return len(res.Images) > 0, nil
+}
+
+func describeFailures(failures []types.ImageFailure) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	reasons := make([]string, 0, len(failures))
+	for _, f := range failures {
+		reasons = append(reasons, fmt.Sprintf("%s: %s", f.FailureCode, aws.ToString(f.FailureReason)))
+	}
+	return " (" + strings.Join(reasons, "; ") + ")"
 }
 
 func isImageAlreadyExists(err error) bool {
@@ -173,8 +200,16 @@ func ParseImageRef(image string) (ImageRef, error) {
 		if len(repoDigest) != 2 {
 			return ImageRef{}, fmt.Errorf("image %q has invalid digest format", image)
 		}
+		repository, tag := repoDigest[0], ""
+		// Support "repo:tag@sha256:..." references: the digest wins, the tag is kept as metadata.
+		if index := strings.LastIndex(repository, ":"); index >= 0 {
+			repository, tag = repository[:index], repository[index+1:]
+		}
+		if repository == "" || repoDigest[1] == "" {
+			return ImageRef{}, fmt.Errorf("image %q has empty repository or digest", image)
+		}
 		accountId, region := regionFromRegistry(registry)
-		return ImageRef{Registry: registry, Repository: repoDigest[0], Digest: repoDigest[1], AccountId: accountId, Region: region}, nil
+		return ImageRef{Registry: registry, Repository: repository, Tag: tag, Digest: repoDigest[1], AccountId: accountId, Region: region}, nil
 	}
 
 	index := strings.LastIndex(repoAndRef, ":")
@@ -194,8 +229,11 @@ func ParseImageRef(image string) (ImageRef, error) {
 
 func regionFromRegistry(registry string) (string, string) {
 	matches := ecrRegistryRegex.FindStringSubmatch(registry)
-	if len(matches) != 3 {
+	if matches == nil {
 		return "", ""
 	}
-	return matches[1], matches[2]
+	if matches[2] != "" {
+		return matches[1], matches[2]
+	}
+	return matches[1], matches[3]
 }

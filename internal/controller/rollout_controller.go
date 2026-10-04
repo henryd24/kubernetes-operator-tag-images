@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	"github.com/henryd24/kubernetes-operator-tag-images/internal/ecr"
 )
@@ -21,9 +23,14 @@ const (
 	envAnnotationKey                = "ecr-tagger.io/environment"
 	repositoryOverrideAnnotationKey = "ecr-tagger.io/repository"
 	accountIDOverrideAnnotationKey  = "ecr-tagger.io/account-id"
+	skipAnnotationKey               = "ecr-tagger.io/skip"
+	containerAnnotationKey          = "ecr-tagger.io/container"
 	lastTaggedImageAnnotationKey    = "ecr-tagger.io/last-tagged-image"
 	lastTaggedGenAnnotationKey      = "ecr-tagger.io/last-tagged-generation"
 )
+
+// invalidTagCharsRegex matches characters ECR rejects in image tags.
+var invalidTagCharsRegex = regexp.MustCompile(`[^a-z0-9._-]`)
 
 var rolloutGVK = schema.GroupVersionKind{Group: "argoproj.io", Version: "v1alpha1", Kind: "Rollout"}
 
@@ -38,6 +45,8 @@ type RolloutReconciler struct {
 	Recorder      record.EventRecorder
 	OperatorName  string
 	DefaultRegion string
+	// MaxConcurrentReconciles defaults to 1 when unset.
+	MaxConcurrentReconciles int
 }
 
 func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -50,30 +59,29 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	annotations := rollout.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	if skip, _ := strconv.ParseBool(annotations[skipAnnotationKey]); skip {
+		return ctrl.Result{}, nil
+	}
+
 	healthy, observedGeneration := rolloutHealthy(rollout)
+	generation := rollout.GetGeneration()
 	if !healthy {
-		generation := rollout.GetGeneration()
 		if observedGeneration > 0 && observedGeneration < generation {
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
 		return ctrl.Result{}, nil
 	}
 
-	generation := rollout.GetGeneration()
-	if observedGeneration > 0 && observedGeneration < generation {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-	}
-
-	image, err := firstContainerImage(rollout)
+	image, err := containerImage(rollout, annotations[containerAnnotationKey])
 	if err != nil {
 		log.Error(err, "rollout does not expose an image in spec.template.spec.containers")
 		return ctrl.Result{}, nil
 	}
 
-	annotations := rollout.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
 	if annotations[lastTaggedImageAnnotationKey] == image && annotations[lastTaggedGenAnnotationKey] == strconv.FormatInt(generation, 10) {
 		return ctrl.Result{}, nil
 	}
@@ -81,6 +89,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	parsedImage, err := ecr.ParseImageRef(image)
 	if err != nil {
 		log.Error(err, "image is not a valid ECR image", "image", image)
+		return ctrl.Result{}, nil
+	}
+	if !parsedImage.IsECR() {
+		// Retrying would never succeed: the source registry is not ECR.
+		log.V(1).Info("image registry is not ECR, skipping", "image", image)
 		return ctrl.Result{}, nil
 	}
 
@@ -130,6 +143,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	deploymentTagExists, err := tagger.TagExists(ctx, destinationRepo, accountID, deploymentTag)
 	if err != nil {
+		tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultFailure).Inc()
 		return ctrl.Result{}, fmt.Errorf("check deployment tag existence: %w", err)
 	}
 
@@ -143,6 +157,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := tagger.Retag(ctx, parsedImage, accountID, destinationRepo, tagsToApply); err != nil {
 		log.Error(err, "unable to tag image in ECR", "image", image, "region", region)
 		r.Recorder.Eventf(rollout, "Warning", "ECRTagFailed", "Failed to tag image %s in %s: %v", image, region, err)
+		tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultFailure).Inc()
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -156,6 +171,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("patch rollout annotations: %w", err)
 	}
 
+	tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultSuccess).Inc()
 	r.Recorder.Eventf(rollout, "Normal", "ECRTagUpdated", "Tagged %s with tags %s in repository %s", image, strings.Join(tagsToApply, ","), destinationRepo)
 	log.Info("successfully tagged image in ECR", "image", image, "tagsApplied", tagsToApply, "repository", destinationRepo)
 
@@ -168,8 +184,10 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(rollout).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		Complete(r)
 }
+
 func readObservedGeneration(obj *unstructured.Unstructured) int64 {
 	if s, found, _ := unstructured.NestedString(obj.Object, "status", "observedGeneration"); found && s != "" {
 		n, _ := strconv.ParseInt(s, 10, 64)
@@ -206,6 +224,12 @@ func rolloutHealthy(obj *unstructured.Unstructured) (bool, int64) {
 }
 
 func firstContainerImage(obj *unstructured.Unstructured) (string, error) {
+	return containerImage(obj, "")
+}
+
+// containerImage returns the image of the container named containerName, or of
+// the first container when containerName is empty.
+func containerImage(obj *unstructured.Unstructured, containerName string) (string, error) {
 	containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
 	if err != nil {
 		return "", err
@@ -214,9 +238,24 @@ func firstContainerImage(obj *unstructured.Unstructured) (string, error) {
 		return "", fmt.Errorf("no containers were found")
 	}
 
-	containerMap, ok := containers[0].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("container entry has invalid format")
+	var containerMap map[string]interface{}
+	if containerName == "" {
+		first, ok := containers[0].(map[string]interface{})
+		if !ok {
+			return "", fmt.Errorf("container entry has invalid format")
+		}
+		containerMap = first
+	} else {
+		for _, c := range containers {
+			candidate, ok := c.(map[string]interface{})
+			if ok && candidate["name"] == containerName {
+				containerMap = candidate
+				break
+			}
+		}
+		if containerMap == nil {
+			return "", fmt.Errorf("container %q was not found", containerName)
+		}
 	}
 
 	imageRaw, ok := containerMap["image"]
@@ -236,6 +275,7 @@ func sanitizeTagValue(v string) string {
 	normalized = strings.ReplaceAll(normalized, "_", "-")
 	normalized = strings.ReplaceAll(normalized, "/", "-")
 	normalized = strings.ReplaceAll(normalized, " ", "-")
+	normalized = invalidTagCharsRegex.ReplaceAllString(normalized, "-")
 
 	if normalized == "" {
 		return "unknown"

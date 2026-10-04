@@ -9,7 +9,7 @@ Operador de Kubernetes que observa recursos `Rollout` de Argo Rollouts. Cuando d
 
 1. Observa objetos `argoproj.io/v1alpha1` de tipo `Rollout`.
 2. Verifica que `status.phase` sea `Healthy` y que el `observedGeneration` este actualizado.
-3. Lee la imagen del primer contenedor en `spec.template.spec.containers[0].image`.
+3. Lee la imagen del primer contenedor en `spec.template.spec.containers[0].image` (o del indicado con `ecr-tagger.io/container`).
 4. Usa `BatchGetImage` y `PutImage` en ECR para crear los tags objetivo.
 5. Escribe anotaciones para no retaguear la misma imagen/generacion repetidamente.
 
@@ -17,6 +17,9 @@ Operador de Kubernetes que observa recursos `Rollout` de Argo Rollouts. Cuando d
 
 - `ecr-tagger.io/environment` (opcional): nombre del ambiente. Si no existe, usa el namespace.
 - `ecr-tagger.io/repository` (opcional): repositorio ECR destino para el retag.
+- `ecr-tagger.io/account-id` (opcional): cuenta AWS del registry destino (por defecto, la de la imagen).
+- `ecr-tagger.io/container` (opcional): nombre del contenedor cuya imagen se tagea. Por defecto, el primero.
+- `ecr-tagger.io/skip` (opcional): `"true"` desactiva el tagging para ese Rollout.
 
 Anotaciones internas usadas por el operador:
 
@@ -27,7 +30,24 @@ Anotaciones internas usadas por el operador:
 
 - CRD de Argo Rollouts instalado en el cluster.
 - Permisos AWS para `ecr:BatchGetImage` y `ecr:PutImage`.
-- Las imagenes de Rollout deben apuntar a ECR (`*.dkr.ecr.<region>.amazonaws.com/repo:tag`).
+- Las imagenes de Rollout deben apuntar a ECR (`*.dkr.ecr.<region>.amazonaws.com/repo:tag`). Tambien se soportan endpoints FIPS, China y dual-stack. Las imagenes que no son de ECR se ignoran.
+- Se soportan imagenes multi-arquitectura (manifest list / OCI index).
+
+## Flags
+
+| Flag | Default | Descripcion |
+|------|---------|-------------|
+| `--leader-elect` | `true` | Habilita leader election. |
+| `--metrics-bind-address` | `:8080` | Direccion del endpoint de metricas. |
+| `--health-probe-bind-address` | `:8081` | Direccion de los probes. |
+| `--max-concurrent-reconciles` | `1` | Rollouts procesados en paralelo. |
+| `--version` | | Imprime la version y termina. |
+
+## Metricas
+
+Ademas de las metricas estandar de controller-runtime, se expone:
+
+- `ecr_tagger_tag_operations_total{namespace,result}`: intentos de tagging (`result` = `success` o `failure`).
 
 ## Desarrollo local
 
@@ -41,8 +61,8 @@ go run ./cmd/main.go --leader-elect=false
 
 ```bash
 make build
-make docker-build IMAGE=henda24/rollout-ecr-tagger:0.1.0
-make docker-push IMAGE=henda24/rollout-ecr-tagger:0.1.0
+make docker-build IMAGE=henda24/rollout-ecr-tagger:v0.5.0 VERSION=v0.5.0
+make docker-push IMAGE=henda24/rollout-ecr-tagger:v0.5.0
 ```
 
 ## Deploy
