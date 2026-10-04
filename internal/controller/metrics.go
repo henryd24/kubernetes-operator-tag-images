@@ -8,6 +8,9 @@ import (
 const (
 	resultSuccess = "success"
 	resultFailure = "failure"
+	// resultImmutable counts tags that could not be updated because the
+	// repository has tag immutability enabled.
+	resultImmutable = "immutable"
 )
 
 var tagOperationsTotal = prometheus.NewCounterVec(

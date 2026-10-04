@@ -25,6 +25,7 @@ const (
 	accountIDOverrideAnnotationKey  = "ecr-tagger.io/account-id"
 	skipAnnotationKey               = "ecr-tagger.io/skip"
 	containerAnnotationKey          = "ecr-tagger.io/container"
+	tagSuffixAnnotationKey          = "ecr-tagger.io/tag-suffix"
 	lastTaggedImageAnnotationKey    = "ecr-tagger.io/last-tagged-image"
 	lastTaggedGenAnnotationKey      = "ecr-tagger.io/last-tagged-generation"
 )
@@ -82,7 +83,9 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if annotations[lastTaggedImageAnnotationKey] == image && annotations[lastTaggedGenAnnotationKey] == strconv.FormatInt(generation, 10) {
+	// Only an image change requires retagging: spec changes that keep the image
+	// (scaling, restarts, resource tweaks) bump the generation but not the image.
+	if annotations[lastTaggedImageAnnotationKey] == image {
 		return ctrl.Result{}, nil
 	}
 
@@ -125,23 +128,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	var tagSuffix string
-	if parsedImage.Tag != "" {
-		parts := strings.Split(parsedImage.Tag, "-")
-		tagSuffix = parts[len(parts)-1]
-	} else if parsedImage.Digest != "" {
-		tagSuffix = parsedImage.Digest
-		if len(tagSuffix) > 12 {
-			tagSuffix = tagSuffix[len(tagSuffix)-12:]
-		}
-	} else {
-		tagSuffix = "unknown"
-	}
-
+	tagSuffix := deploymentTagSuffix(parsedImage, annotations[tagSuffixAnnotationKey])
 	deploymentTag := fmt.Sprintf("%s-%s", sanitizeTagValue(environment), sanitizeTagValue(tagSuffix))
 	activeTag := fmt.Sprintf("active-%s", sanitizeTagValue(environment))
 
-	deploymentTagExists, err := tagger.TagExists(ctx, destinationRepo, accountID, deploymentTag)
+	existingDigest, deploymentTagExists, err := tagger.TagDigest(ctx, destinationRepo, accountID, deploymentTag)
 	if err != nil {
 		tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultFailure).Inc()
 		return ctrl.Result{}, fmt.Errorf("check deployment tag existence: %w", err)
@@ -154,11 +145,29 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("deployment tag already exists, skipping deploymentTag update", "deploymentTag", deploymentTag, "repository", destinationRepo)
 	}
 
-	if err := tagger.Retag(ctx, parsedImage, accountID, destinationRepo, tagsToApply); err != nil {
+	result, err := tagger.Retag(ctx, parsedImage, accountID, destinationRepo, tagsToApply)
+	if err != nil {
 		log.Error(err, "unable to tag image in ECR", "image", image, "region", region)
 		r.Recorder.Eventf(rollout, "Warning", "ECRTagFailed", "Failed to tag image %s in %s: %v", image, region, err)
 		tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultFailure).Inc()
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	if deploymentTagExists && existingDigest != "" && result.SourceDigest != "" && existingDigest != result.SourceDigest {
+		log.Info("deployment tag already points to a different image", "deploymentTag", deploymentTag, "existingDigest", existingDigest, "imageDigest", result.SourceDigest)
+		r.Recorder.Eventf(rollout, "Warning", "DeploymentTagCollision",
+			"Tag %s in repository %s already points to another image (%s); it was kept unchanged. Consider annotation %s=full",
+			deploymentTag, destinationRepo, existingDigest, tagSuffixAnnotationKey)
+	}
+
+	if len(result.Immutable) > 0 {
+		// Retrying cannot succeed while the repository is immutable, so the image is
+		// marked as processed below instead of requeueing.
+		log.Info("tags not updated because the repository has tag immutability enabled", "tags", result.Immutable, "repository", destinationRepo)
+		r.Recorder.Eventf(rollout, "Warning", "ECRTagImmutable",
+			"Tags %s were not updated because repository %s has tag immutability enabled",
+			strings.Join(result.Immutable, ","), destinationRepo)
+		tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultImmutable).Inc()
 	}
 
 	base := rollout.DeepCopy()
@@ -171,9 +180,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("patch rollout annotations: %w", err)
 	}
 
-	tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultSuccess).Inc()
-	r.Recorder.Eventf(rollout, "Normal", "ECRTagUpdated", "Tagged %s with tags %s in repository %s", image, strings.Join(tagsToApply, ","), destinationRepo)
-	log.Info("successfully tagged image in ECR", "image", image, "tagsApplied", tagsToApply, "repository", destinationRepo)
+	if len(result.Applied) > 0 {
+		tagOperationsTotal.WithLabelValues(rollout.GetNamespace(), resultSuccess).Inc()
+		r.Recorder.Eventf(rollout, "Normal", "ECRTagUpdated", "Tagged %s with tags %s in repository %s", image, strings.Join(result.Applied, ","), destinationRepo)
+		log.Info("successfully tagged image in ECR", "image", image, "tagsApplied", result.Applied, "repository", destinationRepo)
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -268,6 +279,28 @@ func containerImage(obj *unstructured.Unstructured, containerName string) (strin
 		return "", fmt.Errorf("container image is empty")
 	}
 	return image, nil
+}
+
+// deploymentTagSuffix returns the part of the source image reference used in the
+// deployment tag. By default it is the last "-" separated segment of the tag; with
+// mode "full" the whole tag is used, which avoids collisions such as
+// v1.8.4-alpha and v1.9.0-alpha both producing "alpha".
+func deploymentTagSuffix(ref ecr.ImageRef, mode string) string {
+	switch {
+	case ref.Tag != "" && strings.EqualFold(strings.TrimSpace(mode), "full"):
+		return ref.Tag
+	case ref.Tag != "":
+		parts := strings.Split(ref.Tag, "-")
+		return parts[len(parts)-1]
+	case ref.Digest != "":
+		suffix := ref.Digest
+		if len(suffix) > 12 {
+			suffix = suffix[len(suffix)-12:]
+		}
+		return suffix
+	default:
+		return "unknown"
+	}
 }
 
 func sanitizeTagValue(v string) string {

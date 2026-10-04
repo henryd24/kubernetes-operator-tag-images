@@ -11,7 +11,11 @@ Operador de Kubernetes que observa recursos `Rollout` de Argo Rollouts. Cuando d
 2. Verifica que `status.phase` sea `Healthy` y que el `observedGeneration` este actualizado.
 3. Lee la imagen del primer contenedor en `spec.template.spec.containers[0].image` (o del indicado con `ecr-tagger.io/container`).
 4. Usa `BatchGetImage` y `PutImage` en ECR para crear los tags objetivo.
-5. Escribe anotaciones para no retaguear la misma imagen/generacion repetidamente.
+5. Escribe anotaciones para no retaguear la misma imagen. Solo un cambio de imagen dispara un retag: escalar, reiniciar o cambiar recursos del Rollout no genera llamadas a ECR.
+
+### Repositorios con tags inmutables
+
+Si el repositorio tiene `IMMUTABLE` activo, `active-<ambiente>` no se puede mover una vez creado. El operador lo detecta (`ImageTagAlreadyExistsException`), aplica el resto de tags (el de despliegue si es nuevo), emite un evento `ECRTagImmutable` y marca la imagen como procesada: no reintenta, porque nunca podria tener exito. No requiere permisos IAM adicionales.
 
 ## Anotaciones soportadas en Rollout
 
@@ -20,6 +24,7 @@ Operador de Kubernetes que observa recursos `Rollout` de Argo Rollouts. Cuando d
 - `ecr-tagger.io/account-id` (opcional): cuenta AWS del registry destino (por defecto, la de la imagen).
 - `ecr-tagger.io/container` (opcional): nombre del contenedor cuya imagen se tagea. Por defecto, el primero.
 - `ecr-tagger.io/skip` (opcional): `"true"` desactiva el tagging para ese Rollout.
+- `ecr-tagger.io/tag-suffix` (opcional): `last-segment` (por defecto) usa la ultima parte del tag tras `-`; `full` usa el tag completo (`prod-v1.8.4-alpha`), evitando colisiones.
 
 Anotaciones internas usadas por el operador:
 
@@ -47,7 +52,7 @@ Anotaciones internas usadas por el operador:
 
 Ademas de las metricas estandar de controller-runtime, se expone:
 
-- `ecr_tagger_tag_operations_total{namespace,result}`: intentos de tagging (`result` = `success` o `failure`).
+- `ecr_tagger_tag_operations_total{namespace,result}`: intentos de tagging (`result` = `success`, `failure` o `immutable`).
 
 ## Desarrollo local
 
@@ -107,3 +112,5 @@ Con el Rollout anterior, si la imagen es `payment-api:v1.8.4`:
 
 Si el tag fuera `v1.8.4-alpha`:
 - Tag generado: `prod-alpha` (se toma `alpha` que es la última parte después del split por `-`)
+
+Ojo: con el modo por defecto, `v1.8.4-alpha` y `v1.9.0-alpha` generan ambos `prod-alpha`. Como el tag de despliegue nunca se sobrescribe, el segundo despliegue no recibe tag propio y `prod-alpha` sigue apuntando a `v1.8.4-alpha`. Cuando esto ocurre el operador emite un evento `DeploymentTagCollision`. Si tus tags no terminan en un identificador unico (p. ej. el SHA del commit), usa `ecr-tagger.io/tag-suffix: full`.

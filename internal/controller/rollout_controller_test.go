@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -20,6 +21,9 @@ import (
 type fakeTagger struct {
 	tagExists      bool
 	tagExistsErr   error
+	existingDigest string
+	sourceDigest   string
+	immutableTags  []string
 	retagErr       error
 	checkedRepo    string
 	checkedAccount string
@@ -30,22 +34,33 @@ type fakeTagger struct {
 	retagAccount   string
 }
 
-func (f *fakeTagger) Retag(_ context.Context, source ecr.ImageRef, destinationAccountId string, destinationRepository string, tags []string) error {
+func (f *fakeTagger) Retag(_ context.Context, source ecr.ImageRef, destinationAccountId string, destinationRepository string, tags []string) (ecr.RetagResult, error) {
 	f.retagSource = source
 	f.retagRepo = destinationRepository
 	f.retagAccount = destinationAccountId
 	f.retagTags = append([]string{}, tags...)
-	return f.retagErr
+	if f.retagErr != nil {
+		return ecr.RetagResult{}, f.retagErr
+	}
+	result := ecr.RetagResult{SourceDigest: f.sourceDigest}
+	for _, tag := range tags {
+		if slices.Contains(f.immutableTags, tag) {
+			result.Immutable = append(result.Immutable, tag)
+		} else {
+			result.Applied = append(result.Applied, tag)
+		}
+	}
+	return result, nil
 }
 
-func (f *fakeTagger) TagExists(_ context.Context, repository string, accountId string, tag string) (bool, error) {
+func (f *fakeTagger) TagDigest(_ context.Context, repository string, accountId string, tag string) (string, bool, error) {
 	f.checkedRepo = repository
 	f.checkedAccount = accountId
 	f.checkedTag = tag
 	if f.tagExistsErr != nil {
-		return false, f.tagExistsErr
+		return "", false, f.tagExistsErr
 	}
-	return f.tagExists, nil
+	return f.existingDigest, f.tagExists, nil
 }
 
 type fakeTaggerFactory struct {

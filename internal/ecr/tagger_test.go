@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/aws/smithy-go"
 )
 
 func TestParseImageRefWithTag(t *testing.T) {
@@ -96,6 +97,8 @@ type fakeECRClient struct {
 	getInputs []*ecr.BatchGetImageInput
 	putInputs []*ecr.PutImageInput
 	putErr    error
+	// putErrByTag overrides putErr for specific tags.
+	putErrByTag map[string]error
 }
 
 func (f *fakeECRClient) BatchGetImage(_ context.Context, params *ecr.BatchGetImageInput, _ ...func(*ecr.Options)) (*ecr.BatchGetImageOutput, error) {
@@ -105,19 +108,27 @@ func (f *fakeECRClient) BatchGetImage(_ context.Context, params *ecr.BatchGetIma
 
 func (f *fakeECRClient) PutImage(_ context.Context, params *ecr.PutImageInput, _ ...func(*ecr.Options)) (*ecr.PutImageOutput, error) {
 	f.putInputs = append(f.putInputs, params)
+	if err, ok := f.putErrByTag[aws.ToString(params.ImageTag)]; ok {
+		return &ecr.PutImageOutput{}, err
+	}
 	return &ecr.PutImageOutput{}, f.putErr
 }
 
 func TestRetagCopiesManifestAndMediaType(t *testing.T) {
 	indexType := "application/vnd.oci.image.index.v1+json"
 	fake := &fakeECRClient{getOutput: &ecr.BatchGetImageOutput{Images: []types.Image{{
+		ImageId:                &types.ImageIdentifier{ImageDigest: aws.String("sha256:index")},
 		ImageManifest:          aws.String(`{"manifests":[]}`),
 		ImageManifestMediaType: aws.String(indexType),
 	}}}}
 	source, _ := ParseImageRef("123456789012.dkr.ecr.us-east-1.amazonaws.com/app:v1")
 
-	if err := New(fake).Retag(context.Background(), source, "123456789012", "app", []string{"dev-v1", "active-dev"}); err != nil {
+	result, err := New(fake).Retag(context.Background(), source, "123456789012", "app", []string{"dev-v1", "active-dev"})
+	if err != nil {
 		t.Fatalf("Retag returned error: %v", err)
+	}
+	if !slices.Equal(result.Applied, []string{"dev-v1", "active-dev"}) || result.SourceDigest != "sha256:index" {
+		t.Fatalf("unexpected result: %+v", result)
 	}
 
 	if !slices.Contains(fake.getInputs[0].AcceptedMediaTypes, indexType) {
@@ -140,8 +151,54 @@ func TestRetagReportsBatchGetFailures(t *testing.T) {
 	}}}}
 	source, _ := ParseImageRef("123456789012.dkr.ecr.us-east-1.amazonaws.com/app:v1")
 
-	err := New(fake).Retag(context.Background(), source, "123456789012", "app", []string{"active-dev"})
+	_, err := New(fake).Retag(context.Background(), source, "123456789012", "app", []string{"active-dev"})
 	if err == nil || !strings.Contains(err.Error(), "ImageNotFound") {
 		t.Fatalf("expected error mentioning ImageNotFound, got %v", err)
+	}
+}
+
+func TestRetagClassifiesImmutableAndAlreadyExistingTags(t *testing.T) {
+	fake := &fakeECRClient{
+		getOutput: &ecr.BatchGetImageOutput{Images: []types.Image{{ImageManifest: aws.String("{}")}}},
+		putErrByTag: map[string]error{
+			"active-dev": &smithy.GenericAPIError{Code: "ImageTagAlreadyExistsException"},
+			"dev-v1":     &smithy.GenericAPIError{Code: "ImageAlreadyExistsException"},
+		},
+	}
+	source, _ := ParseImageRef("123456789012.dkr.ecr.us-east-1.amazonaws.com/app:v1")
+
+	result, err := New(fake).Retag(context.Background(), source, "123456789012", "app", []string{"dev-v1", "active-dev"})
+	if err != nil {
+		t.Fatalf("immutable tags must not be returned as errors: %v", err)
+	}
+	if !slices.Equal(result.Applied, []string{"dev-v1"}) || !slices.Equal(result.Immutable, []string{"active-dev"}) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestRetagReturnsOtherPutErrors(t *testing.T) {
+	fake := &fakeECRClient{
+		getOutput: &ecr.BatchGetImageOutput{Images: []types.Image{{ImageManifest: aws.String("{}")}}},
+		putErr:    &smithy.GenericAPIError{Code: "AccessDeniedException"},
+	}
+	source, _ := ParseImageRef("123456789012.dkr.ecr.us-east-1.amazonaws.com/app:v1")
+
+	if _, err := New(fake).Retag(context.Background(), source, "123456789012", "app", []string{"active-dev"}); err == nil {
+		t.Fatalf("expected error for AccessDeniedException")
+	}
+}
+
+func TestTagDigest(t *testing.T) {
+	fake := &fakeECRClient{getOutput: &ecr.BatchGetImageOutput{Images: []types.Image{{
+		ImageId: &types.ImageIdentifier{ImageDigest: aws.String("sha256:abc")},
+	}}}}
+	digest, exists, err := New(fake).TagDigest(context.Background(), "app", "123456789012", "dev-v1")
+	if err != nil || !exists || digest != "sha256:abc" {
+		t.Fatalf("unexpected result: digest=%q exists=%v err=%v", digest, exists, err)
+	}
+
+	fake.getOutput = &ecr.BatchGetImageOutput{}
+	if _, exists, err := New(fake).TagDigest(context.Background(), "app", "123456789012", "dev-v2"); err != nil || exists {
+		t.Fatalf("expected missing tag, got exists=%v err=%v", exists, err)
 	}
 }

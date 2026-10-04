@@ -46,9 +46,21 @@ func (r ImageRef) IsECR() bool {
 	return r.AccountId != ""
 }
 
+// RetagResult describes the outcome of a Retag call.
+type RetagResult struct {
+	// SourceDigest is the digest of the source image manifest.
+	SourceDigest string
+	// Applied lists the tags that now point to the source image.
+	Applied []string
+	// Immutable lists the tags that already exist in a repository with tag
+	// immutability enabled. They cannot be updated, so retrying is pointless.
+	Immutable []string
+}
+
 type Tagger interface {
-	Retag(ctx context.Context, source ImageRef, destinationAccountId string, destinationRepository string, tags []string) error
-	TagExists(ctx context.Context, repository string, accountId string, tag string) (bool, error)
+	Retag(ctx context.Context, source ImageRef, destinationAccountId string, destinationRepository string, tags []string) (RetagResult, error)
+	// TagDigest reports whether the tag exists and, when known, the digest it points to.
+	TagDigest(ctx context.Context, repository string, accountId string, tag string) (digest string, exists bool, err error)
 }
 
 type client interface {
@@ -64,9 +76,10 @@ func New(client client) Tagger {
 	return &awsTagger{client: client}
 }
 
-func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccountId string, destinationRepository string, tags []string) error {
+func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccountId string, destinationRepository string, tags []string) (RetagResult, error) {
+	result := RetagResult{}
 	if len(tags) == 0 {
-		return errors.New("no destination tags were provided")
+		return result, errors.New("no destination tags were provided")
 	}
 
 	imageID := types.ImageIdentifier{}
@@ -75,7 +88,7 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccou
 	} else if source.Tag != "" {
 		imageID.ImageTag = &source.Tag
 	} else {
-		return errors.New("source image does not have tag or digest")
+		return result, errors.New("source image does not have tag or digest")
 	}
 
 	res, err := a.client.BatchGetImage(ctx, &ecr.BatchGetImageInput{
@@ -85,14 +98,17 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccou
 		RegistryId:         &source.AccountId,
 	})
 	if err != nil {
-		return fmt.Errorf("batch get image from ecr: %w", err)
+		return result, fmt.Errorf("batch get image from ecr: %w", err)
 	}
 	if len(res.Images) == 0 || res.Images[0].ImageManifest == nil {
-		return fmt.Errorf("source image not found in repository %s%s", source.Repository, describeFailures(res.Failures))
+		return result, fmt.Errorf("source image not found in repository %s%s", source.Repository, describeFailures(res.Failures))
 	}
 
 	manifest := res.Images[0].ImageManifest
 	mediaType := res.Images[0].ImageManifestMediaType
+	if res.Images[0].ImageId != nil {
+		result.SourceDigest = aws.ToString(res.Images[0].ImageId.ImageDigest)
+	}
 	for _, tag := range tags {
 		tag := strings.TrimSpace(tag)
 		if tag == "" {
@@ -106,20 +122,27 @@ func (a *awsTagger) Retag(ctx context.Context, source ImageRef, destinationAccou
 			ImageTag:               &tag,
 			RegistryId:             &destinationAccountId,
 		}); err != nil {
-			if isImageAlreadyExists(err) {
+			switch {
+			case isAPIError(err, "ImageAlreadyExistsException"):
+				// The tag already points to this exact manifest.
+			case isAPIError(err, "ImageTagAlreadyExistsException"):
+				// The repository is immutable and the tag points to another image.
+				result.Immutable = append(result.Immutable, tag)
 				continue
+			default:
+				return result, fmt.Errorf("put image with tag %s: %w", tag, err)
 			}
-			return fmt.Errorf("put image with tag %s: %w", tag, err)
 		}
+		result.Applied = append(result.Applied, tag)
 	}
 
-	return nil
+	return result, nil
 }
 
-func (a *awsTagger) TagExists(ctx context.Context, repository string, accountId string, tag string) (bool, error) {
+func (a *awsTagger) TagDigest(ctx context.Context, repository string, accountId string, tag string) (string, bool, error) {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
-		return false, errors.New("tag is empty")
+		return "", false, errors.New("tag is empty")
 	}
 
 	res, err := a.client.BatchGetImage(ctx, &ecr.BatchGetImageInput{
@@ -129,10 +152,16 @@ func (a *awsTagger) TagExists(ctx context.Context, repository string, accountId 
 		RegistryId:         &accountId,
 	})
 	if err != nil {
-		return false, fmt.Errorf("check existing tag %s: %w", tag, err)
+		return "", false, fmt.Errorf("check existing tag %s: %w", tag, err)
 	}
-
-	return len(res.Images) > 0, nil
+	if len(res.Images) == 0 {
+		return "", false, nil
+	}
+	var digest string
+	if res.Images[0].ImageId != nil {
+		digest = aws.ToString(res.Images[0].ImageId.ImageDigest)
+	}
+	return digest, true, nil
 }
 
 func describeFailures(failures []types.ImageFailure) string {
@@ -146,9 +175,9 @@ func describeFailures(failures []types.ImageFailure) string {
 	return " (" + strings.Join(reasons, "; ") + ")"
 }
 
-func isImageAlreadyExists(err error) bool {
+func isAPIError(err error, code string) bool {
 	var apiErr smithy.APIError
-	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "ImageAlreadyExistsException"
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == code
 }
 
 type Factory struct {
