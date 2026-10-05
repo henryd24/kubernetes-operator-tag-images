@@ -27,10 +27,28 @@ exactamente los mismos tags, y los permisos IAM requeridos no cambian
 - **Colisiones del tag de despliegue**: si el tag de despliegue ya existe apuntando a otra imagen
   (p. ej. `v1.8.4-alpha` y `v1.9.0-alpha` → `prod-alpha`) se emite un evento
   `DeploymentTagCollision` en vez de omitirlo en silencio.
+- **Espera exponencial ante errores**: si una llamada a ECR falla (permisos, repositorio
+  inexistente, throttling) se reintenta con espera creciente de 5s hasta 15 minutos, en vez de
+  cada 30s indefinidamente. El evento `ECRTagFailed` se sigue emitiendo en cada intento.
+- **Manifiesto**: `TARGET_ROLE_ARN` ahora viene vacío. Antes traía un valor de ejemplo
+  (`arn:aws:iam::CUENTA_ECR:...`) que hacía fallar todos los tagueos si se aplicaba sin editar.
 - Los errores de `BatchGetImage` ahora incluyen el código y motivo de ECR
   (`ImageNotFound`, `RepositoryNotFound`, ...).
 
 ### Nuevas funcionalidades (opt-in)
+
+- **Soporte para Deployments**: flag `--enable-deployments` (desactivado por defecto). Solo se
+  procesan los Deployments con el label `ecr-tagger.io/enabled: "true"`; el filtro lo aplica el
+  API server, así que el operador no guarda en memoria el resto de Deployments ni toca los de
+  sistema (p. ej. add-ons de EKS). Requiere permisos RBAC adicionales (incluidos en el chart).
+- **Rollouts con `spec.workloadRef`**: ahora se tagean leyendo la plantilla del Deployment,
+  ReplicaSet o PodTemplate referenciado (antes se ignoraban). Se espera a que Argo Rollouts haya
+  observado la última versión del recurso referenciado (`status.workloadObservedGeneration`).
+  Requiere permiso `get` sobre esos recursos (agregado al manifiesto y al chart).
+- **Flag `--watch-namespaces`**: limita el operador a ciertos namespaces (menos memoria y
+  permisos por namespace con `Role` en vez de `ClusterRole` en el chart).
+- **Chart de Helm** en `charts/rollout-ecr-tagger`, con soporte para IRSA, RBAC por namespace,
+  Service y ServiceMonitor de métricas.
 
 - Anotación `ecr-tagger.io/skip: "true"`: desactiva el tagging para un Rollout.
 - Anotación `ecr-tagger.io/tag-suffix: full`: usa el tag completo como sufijo del tag de
@@ -39,7 +57,7 @@ exactamente los mismos tags, y los permisos IAM requeridos no cambian
   el primero, igual que antes).
 - Soporte para registries ECR FIPS (`dkr.ecr-fips`), China (`amazonaws.com.cn`) y dual-stack
   (`dkr-ecr.<region>.on.aws`).
-- Métrica Prometheus `ecr_tagger_tag_operations_total{namespace,result}` (`success`, `failure`, `immutable`).
+- Métrica Prometheus `ecr_tagger_tag_operations_total{kind,namespace,result}` (`success`, `failure`, `immutable`).
 - Flag `--max-concurrent-reconciles` (por defecto `1`, igual que antes).
 - Flag `--version` y versión en el log de arranque (inyectada con `-ldflags`).
 
@@ -47,5 +65,16 @@ exactamente los mismos tags, y los permisos IAM requeridos no cambian
 
 - Liberación del lease de leader election al apagar (failover más rápido en rolling updates).
 - Build reproducible y binario más pequeño (`-trimpath -ldflags "-s -w"`).
-- Workflow de CI en GitHub Actions (gofmt, vet, tests con `-race`, build).
-- Nuevos targets `make vet` y `make fmt-check`.
+- Workflow de CI en GitHub Actions: gofmt, vet, tests unitarios con `-race`, tests de
+  integración con envtest, lint del chart y build de la imagen.
+- Workflow de release: al hacer push de un tag `v*` publica la imagen multi-arquitectura
+  (amd64/arm64) en Docker Hub y crea un GitHub Release con el chart empaquetado.
+- Tests de integración contra un API server real (`make test-integration`).
+- Guía de lifecycle policies de ECR (`docs/ecr-lifecycle-policy.md`).
+- Nuevos targets `make vet`, `make fmt-check`, `make test-integration` y `make helm-lint`.
+
+### Notas de actualización
+
+- Si usas `config/operator.yaml`, vuelve a aplicarlo: agrega permiso `get` sobre
+  `deployments`, `replicasets` y `podtemplates` (para `workloadRef`). Revisa que tu valor de
+  `TARGET_ROLE_ARN` se conserve.

@@ -1,0 +1,36 @@
+{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Protect images currently active in any environment (active-*)",
+      "selection": {
+        "tagStatus": "tagged",
+        "tagPatternList": ["active-*"],
+        "countType": "imageCountMoreThan",
+        "countNumber": 9999
+      },
+      "action": { "type": "expire" }
+    },
+    {
+      "rulePriority": 2,
+      "description": "Expire untagged images 14 days after push",
+      "selection": {
+        "tagStatus": "untagged",
+        "countType": "sinceImagePushed",
+        "countUnit": "days",
+        "countNumber": 14
+      },
+      "action": { "type": "expire" }
+    },
+    {
+      "rulePriority": 3,
+      "description": "Keep only the 50 most recent remaining images",
+      "selection": {
+        "tagStatus": "any",
+        "countType": "imageCountMoreThan",
+        "countNumber": 50
+      },
+      "action": { "type": "expire" }
+    }
+  ]
+}

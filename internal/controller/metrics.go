@@ -16,9 +16,9 @@ const (
 var tagOperationsTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "ecr_tagger_tag_operations_total",
-		Help: "Number of ECR tagging attempts for Rollouts, by namespace and result.",
+		Help: "Number of ECR tagging attempts, by workload kind, namespace and result.",
 	},
-	[]string{"namespace", "result"},
+	[]string{"kind", "namespace", "result"},
 )
 
 func init() {

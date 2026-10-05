@@ -44,7 +44,8 @@ func newHealthyRollout(annotations map[string]interface{}, containers ...interfa
 func reconcileRollout(t *testing.T, rollout *unstructured.Unstructured, tagger *fakeTagger) {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build(),
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: tagger},
@@ -133,7 +134,8 @@ func reconcileRolloutWithClient(t *testing.T, rollout *unstructured.Unstructured
 	scheme := runtime.NewScheme()
 	recorder := record.NewFakeRecorder(10)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: tagger},

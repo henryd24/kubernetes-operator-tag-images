@@ -1,0 +1,80 @@
+image:
+  repository: henda24/rollout-ecr-tagger
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+aws:
+  # Region used when it cannot be inferred from the image registry.
+  region: us-east-1
+  # Optional IAM role to assume for cross-account ECR tagging.
+  targetRoleArn: ""
+
+serviceAccount:
+  create: true
+  # Defaults to the release fullname.
+  name: ""
+  # For IRSA: eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+  annotations: {}
+
+# Also tag Deployments labeled ecr-tagger.io/enabled=true. Adds RBAC to list,
+# watch and patch Deployments.
+enableDeployments: false
+
+# Namespaces to watch. Empty watches the whole cluster (ClusterRole); otherwise
+# a Role and RoleBinding are created in each namespace.
+watchNamespaces: []
+
+leaderElection: true
+maxConcurrentReconciles: 1
+# debug, info or error.
+logLevel: info
+extraArgs: []
+extraEnv: []
+
+# Leader election keeps a single active replica; extra replicas are hot standbys.
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop: ["ALL"]
+
+metrics:
+  port: 8080
+  service:
+    enabled: false
+  serviceMonitor:
+    # Requires the Prometheus Operator CRDs.
+    enabled: false
+    interval: 30s
+    labels: {}

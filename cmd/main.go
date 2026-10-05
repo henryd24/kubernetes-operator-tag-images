@@ -27,12 +27,16 @@ func main() {
 		enableLeaderElection    bool
 		maxConcurrentReconciles int
 		showVersion             bool
+		enableDeployments       bool
+		watchNamespaces         string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true, "Enable leader election for controller manager.")
-	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 1, "Maximum number of Rollouts reconciled in parallel.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 1, "Maximum number of workloads reconciled in parallel, per kind.")
+	flag.BoolVar(&enableDeployments, "enable-deployments", false, "Also tag images of Deployments labeled "+controller.EnabledLabelKey+"=true.")
+	flag.StringVar(&watchNamespaces, "watch-namespaces", "", "Comma separated namespaces to watch. Empty watches all namespaces.")
 	flag.BoolVar(&showVersion, "version", false, "Print the operator version and exit.")
 
 	opts := zap.Options{Development: false}
@@ -49,8 +53,17 @@ func main() {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	controllerOpts := controller.Options{
+		WatchNamespaces:         controller.ParseNamespaces(watchNamespaces),
+		EnableDeployments:       enableDeployments,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
+		DefaultRegion:           os.Getenv("AWS_REGION"),
+		ECRFactory:              ecr.NewFactory(),
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  controller.CacheOptions(controllerOpts),
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -63,19 +76,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	taggerFactory := ecr.NewFactory()
-
-	if err := (&controller.RolloutReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		ECRFactory:    taggerFactory,
-		Recorder:      mgr.GetEventRecorderFor("rollout-ecr-tagger"),
-		OperatorName:  "rollout-ecr-tagger",
-		DefaultRegion: os.Getenv("AWS_REGION"),
-
-		MaxConcurrentReconciles: maxConcurrentReconciles,
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.WithName("setup").Error(err, "unable to create controller", "controller", "Rollout")
+	if err := controller.SetupControllers(mgr, controllerOpts); err != nil {
+		ctrl.Log.WithName("setup").Error(err, "unable to create controllers")
 		os.Exit(1)
 	}
 
@@ -88,7 +90,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.WithName("setup").Info("starting manager", "version", version)
+	ctrl.Log.WithName("setup").Info("starting manager", "version", version,
+		"enableDeployments", enableDeployments, "watchNamespaces", controllerOpts.WatchNamespaces)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.WithName("setup").Error(err, "problem running manager")
 		os.Exit(1)

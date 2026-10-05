@@ -125,6 +125,14 @@ func TestRolloutHealthyReturnsFalseWhenPaused(t *testing.T) {
 	}
 }
 
+func firstContainerImage(obj *unstructured.Unstructured) (string, error) {
+	containers, err := podTemplateContainers(obj, "spec", "template", "spec", "containers")
+	if err != nil {
+		return "", err
+	}
+	return selectContainerImage(containers, "")
+}
+
 func TestFirstContainerImage(t *testing.T) {
 	obj := &unstructured.Unstructured{Object: map[string]interface{}{
 		"spec": map[string]interface{}{
@@ -240,7 +248,8 @@ func TestReconcileRollbackSkipsExistingDeploymentTag(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExists: true}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -305,7 +314,8 @@ func TestReconcileAppliesDeploymentAndActiveTagWhenDeploymentTagDoesNotExist(t *
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExists: false}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -358,7 +368,8 @@ func TestReconcileReturnsErrorWhenDeploymentTagCheckFails(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExistsErr: errors.New("ecr unavailable")}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -413,7 +424,8 @@ func TestReconcileSkipsWhenAlreadyTaggedForGeneration(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -459,7 +471,8 @@ func TestReconcileRequeuesWhenObservedGenerationIsBehind(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -479,7 +492,7 @@ func TestReconcileRequeuesWhenObservedGenerationIsBehind(t *testing.T) {
 	}
 }
 
-func TestReconcileRetagFailureRequeues(t *testing.T) {
+func TestReconcileRetagFailureReturnsErrorForBackoff(t *testing.T) {
 	scheme := runtime.NewScheme()
 
 	rollout := &unstructured.Unstructured{Object: map[string]interface{}{
@@ -511,7 +524,8 @@ func TestReconcileRetagFailureRequeues(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExists: false, retagErr: errors.New("retag failed")}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -519,12 +533,9 @@ func TestReconcileRetagFailureRequeues(t *testing.T) {
 		DefaultRegion: "us-east-1",
 	}
 
-	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-app", Namespace: "rollout-test"}})
-	if err != nil {
-		t.Fatalf("expected nil error on retag failure path, got %v", err)
-	}
-	if result.RequeueAfter != 30*time.Second {
-		t.Fatalf("expected requeue after 30s, got %s", result.RequeueAfter)
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-app", Namespace: "rollout-test"}})
+	if err == nil {
+		t.Fatalf("expected an error so the request is retried with exponential backoff")
 	}
 
 	updated := &unstructured.Unstructured{}
