@@ -89,6 +89,7 @@ metadata:
   namespace: prod
   annotations:
     ecr-tagger.io/environment: prod
+    ecr-tagger.io/tag-suffix: full   # recomendado: evita colisiones del tag de despliegue
 spec:
   replicas: 3
   selector:
@@ -111,6 +112,7 @@ Con el Rollout anterior, si la imagen es `payment-api:v1.8.4`:
 - Tag activo: `active-prod` (siempre apunta a la versión activa en prod)
 
 Si el tag fuera `v1.8.4-alpha`:
-- Tag generado: `prod-alpha` (se toma `alpha` que es la última parte después del split por `-`)
+- Con `ecr-tagger.io/tag-suffix: full`: `prod-v1.8.4-alpha`
+- Sin la anotación (modo por defecto): `prod-alpha` (se toma `alpha` que es la última parte después del split por `-`)
 
 Ojo: con el modo por defecto, `v1.8.4-alpha` y `v1.9.0-alpha` generan ambos `prod-alpha`. Como el tag de despliegue nunca se sobrescribe, el segundo despliegue no recibe tag propio y `prod-alpha` sigue apuntando a `v1.8.4-alpha`. Cuando esto ocurre el operador emite un evento `DeploymentTagCollision`. Si tus tags no terminan en un identificador unico (p. ej. el SHA del commit), usa `ecr-tagger.io/tag-suffix: full`.

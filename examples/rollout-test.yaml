@@ -5,6 +5,9 @@ metadata:
   namespace: rollout-test
   annotations:
     ecr-tagger.io/environment: staging
+    # Usa el tag completo como sufijo (staging-v1.0.0-rc1 en vez de staging-rc1)
+    # para evitar colisiones entre versiones que terminan igual.
+    ecr-tagger.io/tag-suffix: full
 spec:
   replicas: 1
   selector:
