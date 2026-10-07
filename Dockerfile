@@ -9,7 +9,9 @@ COPY internal ./internal
 
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager ./cmd/main.go
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o manager ./cmd/main.go
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /

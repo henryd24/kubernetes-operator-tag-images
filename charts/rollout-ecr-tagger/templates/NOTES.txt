@@ -1,0 +1,10 @@
+rollout-ecr-tagger {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Watching: {{ if .Values.watchNamespaces }}{{ join ", " .Values.watchNamespaces }}{{ else }}all namespaces{{ end }}
+Rollouts: enabled
+Deployments: {{ if .Values.enableDeployments }}enabled (only those labeled ecr-tagger.io/enabled=true){{ else }}disabled{{ end }}
+{{- if and (not .Values.aws.targetRoleArn) (not .Values.serviceAccount.annotations) }}
+
+WARNING: neither aws.targetRoleArn nor serviceAccount.annotations (IRSA) is set.
+The operator will use the node credentials to call ECR.
+{{- end }}

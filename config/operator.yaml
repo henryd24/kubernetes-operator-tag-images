@@ -8,6 +8,9 @@ kind: ServiceAccount
 metadata:
   name: rollout-ecr-tagger-controller
   namespace: rollout-ecr-tagger-system
+  # With IRSA, uncomment and set the IAM role that grants ecr:BatchGetImage and ecr:PutImage:
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -23,6 +26,18 @@ rules:
 - apiGroups: ["argoproj.io"]
   resources: ["rollouts"]
   verbs: ["get", "list", "watch", "patch", "update"]
+# Read the workload referenced by a Rollout's spec.workloadRef.
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["podtemplates"]
+  verbs: ["get"]
+# Only needed with --enable-deployments: uncomment to tag Deployments labeled
+# ecr-tagger.io/enabled=true.
+# - apiGroups: ["apps"]
+#   resources: ["deployments"]
+#   verbs: ["list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -44,7 +59,9 @@ metadata:
   namespace: rollout-ecr-tagger-system
 data:
   AWS_REGION: "us-east-1"
-  TARGET_ROLE_ARN: "arn:aws:iam::CUENTA_ECR:role/Role-To-Assume"
+  # Optional: IAM role to assume for cross-account ECR tagging, e.g.
+  # arn:aws:iam::<ECR_ACCOUNT_ID>:role/<ROLE_NAME>. Leave empty to use the pod credentials.
+  TARGET_ROLE_ARN: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -75,6 +92,8 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect=true
+        # - --enable-deployments=true              # also tag labeled Deployments (see RBAC above)
+        # - --watch-namespaces=prod,staging        # restrict to these namespaces
         envFrom:
         - configMapRef:
             name: rollout-ecr-tagger-config

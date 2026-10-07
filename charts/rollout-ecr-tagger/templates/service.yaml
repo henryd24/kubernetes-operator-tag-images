@@ -1,0 +1,16 @@
+{{- if or .Values.metrics.service.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rollout-ecr-tagger.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rollout-ecr-tagger.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "rollout-ecr-tagger.selectorLabels" . | nindent 4 }}
+  ports:
+  - name: metrics
+    port: {{ .Values.metrics.port }}
+    targetPort: metrics
+{{- end }}

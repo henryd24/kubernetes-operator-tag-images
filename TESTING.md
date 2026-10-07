@@ -250,3 +250,11 @@ Esto fallará sin un cluster, pero puedes testear la lógica unitaria:
 ```bash
 go test ./... -v
 ```
+
+## Tests automatizados
+
+```bash
+make test               # tests unitarios
+make test-integration   # Rollouts, Deployments, workloadRef y --watch-namespaces contra un API server real (envtest)
+make helm-lint          # valida el chart
+```

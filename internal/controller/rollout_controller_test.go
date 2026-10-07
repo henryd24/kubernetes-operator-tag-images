@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -20,6 +21,9 @@ import (
 type fakeTagger struct {
 	tagExists      bool
 	tagExistsErr   error
+	existingDigest string
+	sourceDigest   string
+	immutableTags  []string
 	retagErr       error
 	checkedRepo    string
 	checkedAccount string
@@ -30,22 +34,33 @@ type fakeTagger struct {
 	retagAccount   string
 }
 
-func (f *fakeTagger) Retag(_ context.Context, source ecr.ImageRef, destinationAccountId string, destinationRepository string, tags []string) error {
+func (f *fakeTagger) Retag(_ context.Context, source ecr.ImageRef, destinationAccountId string, destinationRepository string, tags []string) (ecr.RetagResult, error) {
 	f.retagSource = source
 	f.retagRepo = destinationRepository
 	f.retagAccount = destinationAccountId
 	f.retagTags = append([]string{}, tags...)
-	return f.retagErr
+	if f.retagErr != nil {
+		return ecr.RetagResult{}, f.retagErr
+	}
+	result := ecr.RetagResult{SourceDigest: f.sourceDigest}
+	for _, tag := range tags {
+		if slices.Contains(f.immutableTags, tag) {
+			result.Immutable = append(result.Immutable, tag)
+		} else {
+			result.Applied = append(result.Applied, tag)
+		}
+	}
+	return result, nil
 }
 
-func (f *fakeTagger) TagExists(_ context.Context, repository string, accountId string, tag string) (bool, error) {
+func (f *fakeTagger) TagDigest(_ context.Context, repository string, accountId string, tag string) (string, bool, error) {
 	f.checkedRepo = repository
 	f.checkedAccount = accountId
 	f.checkedTag = tag
 	if f.tagExistsErr != nil {
-		return false, f.tagExistsErr
+		return "", false, f.tagExistsErr
 	}
-	return f.tagExists, nil
+	return f.existingDigest, f.tagExists, nil
 }
 
 type fakeTaggerFactory struct {
@@ -108,6 +123,14 @@ func TestRolloutHealthyReturnsFalseWhenPaused(t *testing.T) {
 	if healthy {
 		t.Fatalf("expected rollout to be unhealthy when paused")
 	}
+}
+
+func firstContainerImage(obj *unstructured.Unstructured) (string, error) {
+	containers, err := podTemplateContainers(obj, "spec", "template", "spec", "containers")
+	if err != nil {
+		return "", err
+	}
+	return selectContainerImage(containers, "")
 }
 
 func TestFirstContainerImage(t *testing.T) {
@@ -225,7 +248,8 @@ func TestReconcileRollbackSkipsExistingDeploymentTag(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExists: true}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -290,7 +314,8 @@ func TestReconcileAppliesDeploymentAndActiveTagWhenDeploymentTagDoesNotExist(t *
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExists: false}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -343,7 +368,8 @@ func TestReconcileReturnsErrorWhenDeploymentTagCheckFails(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExistsErr: errors.New("ecr unavailable")}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -398,7 +424,8 @@ func TestReconcileSkipsWhenAlreadyTaggedForGeneration(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -444,7 +471,8 @@ func TestReconcileRequeuesWhenObservedGenerationIsBehind(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -464,7 +492,7 @@ func TestReconcileRequeuesWhenObservedGenerationIsBehind(t *testing.T) {
 	}
 }
 
-func TestReconcileRetagFailureRequeues(t *testing.T) {
+func TestReconcileRetagFailureReturnsErrorForBackoff(t *testing.T) {
 	scheme := runtime.NewScheme()
 
 	rollout := &unstructured.Unstructured{Object: map[string]interface{}{
@@ -496,7 +524,8 @@ func TestReconcileRetagFailureRequeues(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollout).Build()
 	mockTagger := &fakeTagger{tagExists: false, retagErr: errors.New("retag failed")}
-	reconciler := &RolloutReconciler{
+	reconciler := &WorkloadReconciler{
+		Kind:          RolloutKind{},
 		Client:        k8sClient,
 		Scheme:        scheme,
 		ECRFactory:    &fakeTaggerFactory{tagger: mockTagger},
@@ -504,12 +533,9 @@ func TestReconcileRetagFailureRequeues(t *testing.T) {
 		DefaultRegion: "us-east-1",
 	}
 
-	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-app", Namespace: "rollout-test"}})
-	if err != nil {
-		t.Fatalf("expected nil error on retag failure path, got %v", err)
-	}
-	if result.RequeueAfter != 30*time.Second {
-		t.Fatalf("expected requeue after 30s, got %s", result.RequeueAfter)
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-app", Namespace: "rollout-test"}})
+	if err == nil {
+		t.Fatalf("expected an error so the request is retried with exponential backoff")
 	}
 
 	updated := &unstructured.Unstructured{}
