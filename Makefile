@@ -159,7 +159,7 @@ kind-rollout: kind-check
 kind-healthy: kind-check
 	@gen=$$(kubectl -n $(TEST_NAMESPACE) get rollout $(TEST_ROLLOUT) -o jsonpath='{.metadata.generation}') && \
 		kubectl -n $(TEST_NAMESPACE) patch rollout $(TEST_ROLLOUT) --subresource=status --type merge \
-			-p "{\"status\":{\"phase\":\"Healthy\",\"observedGeneration\":$$gen}}"
+			-p "{\"status\":{\"phase\":\"Healthy\",\"observedGeneration\":\"$$gen\"}}"
 	@echo "Rollout marcado Healthy; revisa: make kind-logs / make kind-events"
 
 .PHONY: kind-logs
