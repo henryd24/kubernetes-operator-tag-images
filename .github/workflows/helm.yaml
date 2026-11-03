@@ -1,0 +1,26 @@
+name: Helm
+
+on:
+  pull_request:
+    paths:
+      - charts/**
+      - .github/workflows/helm.yaml
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - name: Lint chart
+        run: |
+          helm lint charts/rollout-ecr-tagger --strict
+          helm lint charts/rollout-ecr-tagger --strict \
+            --set enableDeployments=true --set 'watchNamespaces={prod,staging}'

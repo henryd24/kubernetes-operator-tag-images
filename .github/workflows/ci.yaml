@@ -1,9 +1,22 @@
 name: CI
 
+# Solo en PRs y solo si cambia código Go o la imagen: tras el merge no se repite
+# (Publish ya corre los tests al publicar) y los PRs de docs, chart o release no lo disparan.
 on:
-  push:
-    branches: [trunk]
   pull_request:
+    paths:
+      - "**.go"
+      - go.mod
+      - go.sum
+      - Dockerfile
+      - .dockerignore
+      - Makefile
+      - test/integration/**
+      - .github/workflows/ci.yaml
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -27,17 +40,6 @@ jobs:
       - name: Build
         run: make build
 
-  helm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v5
-      - name: Lint chart
-        run: |
-          helm lint charts/rollout-ecr-tagger --strict
-          helm lint charts/rollout-ecr-tagger --strict \
-            --set enableDeployments=true --set 'watchNamespaces={prod,staging}'
-
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -49,3 +51,5 @@ jobs:
           context: .
           push: false
           build-args: VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
