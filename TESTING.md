@@ -1,5 +1,23 @@
 # Guía de Testing del Operador ECR Tagger
 
+## Prueba local rápida con kind (sin push de imagen)
+
+Requisitos: `docker`, `kind`, `kubectl`, `go` y credenciales AWS locales (perfil o variables de entorno).
+La imagen se compila en el host, se carga en kind con `kind load` y el operador toma las credenciales
+de un ConfigMap (`rollout-ecr-tagger-aws-local`) vía `envFrom`. **Solo para desarrollo local.**
+
+```bash
+export AWS_PROFILE=mi-perfil     # o AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+make kind-test TEST_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:v1.0.0
+make kind-healthy                # simula el Rollout Healthy y dispara el retag
+make kind-logs                   # logs del operador
+make kind-tags TEST_IMAGE=...    # tags resultantes en ECR
+```
+
+Ciclo de desarrollo: `make kind-redeploy`. Credenciales expiradas (SSO/STS): `make kind-creds`.
+Limpieza: `make kind-down`. Todos los targets: `make kind-help`.
+Por defecto solo se instala el CRD de Argo Rollouts (sin controlador, sin pods); usa `ARGO_FULL=true` para el controlador completo.
+
 ## Requisitos previos
 
 - Cluster de Kubernetes funcionando (`kubectl` configurado y conectado)
