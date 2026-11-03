@@ -253,7 +253,7 @@ kubectl delete -f config/operator.yaml
 
 ## Testing en local contra ECR real
 
-Para ejecutar el operador en tu máquina contra un clúster y un ECR reales (sin construir imágenes), con Terraform para crear y destruir la infraestructura, sigue [test/terraform/README.md](test/terraform/README.md).
+Con kind: ver el README (`make kind-test`). Si no tienes un repositorio ECR de pruebas, [test/terraform/README.md](test/terraform/README.md) crea y destruye uno con Terraform.
 
 ## Testing en local (sin cluster)
 
