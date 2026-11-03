@@ -26,31 +26,40 @@ cd test/terraform
 terraform init && terraform apply
 
 R=$(terraform output -raw repository_url)
-export DOCKER_CONFIG=$(mktemp -d)    # no toca tu ~/.docker/config.json
-aws ecr get-login-password --region us-east-1 \
-  | crane auth login "${R%%/*}" -u AWS --password-stdin
-crane copy public.ecr.aws/docker/library/busybox:1.36 "$R:v1.0.0"
+# El subshell usa un DOCKER_CONFIG temporal: no toca ~/.docker y borra el token al salir.
+sh -c '
+  export DOCKER_CONFIG=$(mktemp -d); trap "rm -rf $DOCKER_CONFIG" EXIT
+  aws ecr get-login-password --region us-east-1 \
+    | crane auth login "${1%%/*}" -u AWS --password-stdin &&
+  crane copy public.ecr.aws/docker/library/busybox:1.36 "$1:v1.0.0"' _ "$R"
 ```
 
 ## 2. Probar con kind
 
-Exporta la clave del usuario IAM mínimo (no la de administración) y lanza el flujo:
+Pasa la clave del usuario IAM mínimo solo a `make`, sin exportarla, para conservar
+las credenciales de administración que necesitas en el paso 3:
 
 ```bash
-export AWS_ACCESS_KEY_ID=$(terraform output -raw operator_access_key_id)
-export AWS_SECRET_ACCESS_KEY=$(terraform output -raw operator_secret_access_key)
-export AWS_REGION=us-east-1
-cd ../..
-make kind-test TEST_IMAGE="$R:v1.0.0"
-make kind-healthy
-make kind-tags TEST_IMAGE="$R:v1.0.0"
+AWS_ACCESS_KEY_ID=$(terraform output -raw operator_access_key_id) \
+AWS_SECRET_ACCESS_KEY=$(terraform output -raw operator_secret_access_key) \
+AWS_REGION=us-east-1 \
+make -C ../.. kind-test TEST_IMAGE="$R:v1.0.0"
+
+make -C ../.. kind-healthy
 ```
 
-Tras cambiar código: `make kind-redeploy`.
+`kind-tags` lista los tags con `ecr:DescribeImages`, que el usuario mínimo no tiene;
+ejecútalo con tus credenciales de administración:
+
+```bash
+make -C ../.. kind-tags TEST_IMAGE="$R:v1.0.0"
+```
+
+Tras cambiar código: `make -C ../.. kind-redeploy` (con las mismas variables de AWS).
 
 ## 3. Limpiar
 
 ```bash
-make kind-down
-cd test/terraform && terraform destroy   # con las credenciales de administración
+make -C ../.. kind-down
+terraform destroy   # con las credenciales de administración
 ```

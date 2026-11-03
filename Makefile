@@ -1,5 +1,5 @@
 BINARY_NAME=bin/manager
-IMAGE ?= henda24/rollout-ecr-tagger:latest
+IMAGE ?= ghcr.io/henryd24/rollout-ecr-tagger:latest
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS = -s -w -X main.version=$(VERSION)
 LOCALBIN ?= $(CURDIR)/bin
@@ -11,6 +11,8 @@ KIND_CLUSTER ?= ecr-tagger
 KIND_IMAGE ?= rollout-ecr-tagger:kind
 KIND_NAMESPACE ?= rollout-ecr-tagger-system
 KIND_AWS_CONFIGMAP ?= rollout-ecr-tagger-aws-local
+# Todos los targets kind-* fijan el contexto: así nunca actúan sobre otro cluster.
+KUBECTL ?= kubectl --context kind-$(KIND_CLUSTER)
 KIND_GOARCH ?= $(shell go env GOARCH)
 ARGO_ROLLOUTS_VERSION ?= v1.8.0
 # true instala el controlador completo de Argo Rollouts (por defecto solo el CRD).
@@ -79,7 +81,7 @@ test-docker-k3s:
 	rm -f rollout-ecr-tagger.tar
 
 # ---------------------------------------------------------------------------
-# kind: flujo local rápido, sin push a ECR/Docker Hub
+# kind: flujo local rápido, sin push a ECR ni a ningún registro
 #   make kind-test TEST_IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>
 # Credenciales AWS: se leen de AWS_PROFILE (o AWS_ACCESS_KEY_ID/...) y se guardan
 # en el ConfigMap $(KIND_AWS_CONFIGMAP), que el operador consume vía envFrom.
@@ -112,13 +114,13 @@ kind-up: kind-check
 .PHONY: kind-argo
 kind-argo: kind-check
 ifeq ($(ARGO_FULL),true)
-	kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/download/$(ARGO_ROLLOUTS_VERSION)/install.yaml
-	kubectl rollout status deployment/argo-rollouts -n argo-rollouts --timeout=5m
+	$(KUBECTL) create namespace argo-rollouts --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/download/$(ARGO_ROLLOUTS_VERSION)/install.yaml
+	$(KUBECTL) rollout status deployment/argo-rollouts -n argo-rollouts --timeout=5m
 else
 	@# El operador solo necesita el CRD; sin controlador no se crean pods (rápido).
-	kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-rollouts/$(ARGO_ROLLOUTS_VERSION)/manifests/crds/rollout-crd.yaml
-	kubectl wait --for=condition=Established crd/rollouts.argoproj.io --timeout=60s
+	$(KUBECTL) apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-rollouts/$(ARGO_ROLLOUTS_VERSION)/manifests/crds/rollout-crd.yaml
+	$(KUBECTL) wait --for=condition=Established crd/rollouts.argoproj.io --timeout=60s
 endif
 
 .PHONY: kind-build
@@ -128,23 +130,23 @@ kind-build:
 
 .PHONY: kind-creds
 kind-creds: kind-check
-	@kubectl create namespace $(KIND_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	@hack/kind/aws-env.sh | kubectl -n $(KIND_NAMESPACE) create configmap $(KIND_AWS_CONFIGMAP) \
-		--from-env-file=/dev/stdin --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@$(KUBECTL) create namespace $(KIND_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null
+	@hack/kind/aws-env.sh | $(KUBECTL) -n $(KIND_NAMESPACE) create configmap $(KIND_AWS_CONFIGMAP) \
+		--from-env-file=/dev/stdin --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null
 	@echo "ConfigMap $(KIND_NAMESPACE)/$(KIND_AWS_CONFIGMAP) actualizado"
-	@if kubectl -n $(KIND_NAMESPACE) get deployment rollout-ecr-tagger-controller >/dev/null 2>&1; then \
-		kubectl -n $(KIND_NAMESPACE) rollout restart deployment/rollout-ecr-tagger-controller && \
-		kubectl -n $(KIND_NAMESPACE) rollout status deployment/rollout-ecr-tagger-controller --timeout=2m; \
+	@if $(KUBECTL) -n $(KIND_NAMESPACE) get deployment rollout-ecr-tagger-controller >/dev/null 2>&1; then \
+		$(KUBECTL) -n $(KIND_NAMESPACE) rollout restart deployment/rollout-ecr-tagger-controller && \
+		$(KUBECTL) -n $(KIND_NAMESPACE) rollout status deployment/rollout-ecr-tagger-controller --timeout=2m; \
 	fi
 
 .PHONY: kind-deploy
 kind-deploy: kind-check kind-creds
 	kind load docker-image $(KIND_IMAGE) --name $(KIND_CLUSTER)
-	sed 's#image: henda24/rollout-ecr-tagger:.*#image: $(KIND_IMAGE)#' config/operator.yaml | kubectl apply -f -
-	kubectl -n $(KIND_NAMESPACE) patch deployment rollout-ecr-tagger-controller --type strategic -p \
+	sed 's#image: .*rollout-ecr-tagger:.*#image: $(KIND_IMAGE)#' config/operator.yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(KIND_NAMESPACE) patch deployment rollout-ecr-tagger-controller --type strategic -p \
 		'{"spec":{"template":{"spec":{"containers":[{"name":"manager","envFrom":[{"configMapRef":{"name":"rollout-ecr-tagger-config"}},{"configMapRef":{"name":"$(KIND_AWS_CONFIGMAP)"}}]}]}}}}'
-	kubectl -n $(KIND_NAMESPACE) rollout restart deployment/rollout-ecr-tagger-controller
-	kubectl -n $(KIND_NAMESPACE) rollout status deployment/rollout-ecr-tagger-controller --timeout=2m
+	$(KUBECTL) -n $(KIND_NAMESPACE) rollout restart deployment/rollout-ecr-tagger-controller
+	$(KUBECTL) -n $(KIND_NAMESPACE) rollout status deployment/rollout-ecr-tagger-controller --timeout=2m
 
 .PHONY: kind-redeploy
 kind-redeploy: kind-build kind-deploy
@@ -152,29 +154,30 @@ kind-redeploy: kind-build kind-deploy
 .PHONY: kind-rollout
 kind-rollout: kind-check
 	@test -n "$(TEST_IMAGE)" || { echo "Define TEST_IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag> (debe existir en ECR)"; exit 1; }
-	kubectl create namespace $(TEST_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	sed 's#image: .*amazonaws.com/.*#image: $(TEST_IMAGE)#' examples/rollout-test.yaml | kubectl apply -f -
+	$(KUBECTL) create namespace $(TEST_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	sed 's#image: .*amazonaws.com/.*#image: $(TEST_IMAGE)#' examples/rollout-test.yaml | $(KUBECTL) apply -f -
 
 .PHONY: kind-healthy
 kind-healthy: kind-check
 	@gen=$$(kubectl -n $(TEST_NAMESPACE) get rollout $(TEST_ROLLOUT) -o jsonpath='{.metadata.generation}') && \
-		kubectl -n $(TEST_NAMESPACE) patch rollout $(TEST_ROLLOUT) --subresource=status --type merge \
+		$(KUBECTL) -n $(TEST_NAMESPACE) patch rollout $(TEST_ROLLOUT) --subresource=status --type merge \
 			-p "{\"status\":{\"phase\":\"Healthy\",\"observedGeneration\":\"$$gen\"}}"
 	@echo "Rollout marcado Healthy; revisa: make kind-logs / make kind-events"
 
 .PHONY: kind-logs
 kind-logs: kind-check
-	kubectl -n $(KIND_NAMESPACE) logs -f deployment/rollout-ecr-tagger-controller
+	$(KUBECTL) -n $(KIND_NAMESPACE) logs -f deployment/rollout-ecr-tagger-controller
 
 .PHONY: kind-events
 kind-events: kind-check
-	kubectl -n $(TEST_NAMESPACE) describe rollout $(TEST_ROLLOUT)
+	$(KUBECTL) -n $(TEST_NAMESPACE) describe rollout $(TEST_ROLLOUT)
 
 .PHONY: kind-tags
 kind-tags:
 	@test -n "$(TEST_IMAGE)" || { echo "Define TEST_IMAGE=..."; exit 1; }
 	@repo=$$(echo '$(TEST_IMAGE)' | sed -E 's#^[^/]+/##; s#[:@].*##'); \
-		aws ecr describe-images --repository-name $$repo --region $${AWS_REGION:-us-east-1} \
+		region=$$(echo '$(TEST_IMAGE)' | cut -d. -f4); \
+		aws ecr describe-images --repository-name $$repo --region $$region \
 		--query 'imageDetails[*].imageTags' --output text | tr '\t' '\n' | sort -u
 
 # Flujo completo: de cero a Rollout de prueba en un solo comando.

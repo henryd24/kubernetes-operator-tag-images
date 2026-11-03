@@ -21,7 +21,7 @@ Por defecto solo se instala el CRD de Argo Rollouts (sin controlador, sin pods);
 ## Requisitos previos
 
 - Cluster de Kubernetes funcionando (`kubectl` configurado y conectado)
-- Docker instalado y autenticado en Docker Hub
+- Docker instalado y autenticado en el registro donde publiques (GHCR: `docker login ghcr.io`)
 - Credenciales AWS configuradas (IAM user con permisos ECR)
 - Una imagen en ECR ya publicada para hacer pruebas
 
@@ -42,13 +42,13 @@ kubectl rollout status deployment/argo-rollouts -n argo-rollouts --timeout=5m
 
 ```bash
 # Desde la raíz del proyecto
-docker login  # Ingresa credenciales de Docker Hub
+docker login ghcr.io  # usuario de GitHub y un token con scope write:packages
 
 # Build de la imagen
-make docker-build IMAGE=henda24/rollout-ecr-tagger:0.1.0
+make docker-build IMAGE=ghcr.io/henryd24/rollout-ecr-tagger:0.1.0
 
-# Push a Docker Hub
-make docker-push IMAGE=henda24/rollout-ecr-tagger:0.1.0
+# Push a GHCR
+make docker-push IMAGE=ghcr.io/henryd24/rollout-ecr-tagger:0.1.0
 
 # Opcionalmente, usa 'latest'
 make docker-build

@@ -1,72 +1,76 @@
 name: Release
 
-# Publishes a multi-arch image and a GitHub release with the Helm chart when a
-# version tag (e.g. v0.5.0) is pushed.
+# Manual. Prepara una versión (patch, minor o major sobre la versión actual del
+# chart): sube la versión del chart y de la imagen y abre un
+# PR contra trunk. Al mergearlo, el workflow "Publish" publica la imagen en GHCR
+# y crea el GitHub Release.
 #
-# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+# Requiere (Settings > Actions > General) "Allow GitHub Actions to create and
+# approve pull requests". Los PRs creados con GITHUB_TOKEN no disparan el CI.
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Qué parte de la versión actual del chart subir"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
+  pull-requests: write
 
 env:
-  IMAGE: henda24/rollout-ecr-tagger
+  IMAGE: ghcr.io/henryd24/rollout-ecr-tagger
 
 jobs:
-  release:
+  release-pr:
+    if: github.ref == 'refs/heads/trunk'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - name: Test
-        run: go test -race ./...
-
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE }}
-          # "latest" is only moved for stable versions (no -rc, -beta, ...).
-          tags: |
-            type=semver,pattern=v{{version}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ github.ref_name }}
-
-      - uses: azure/setup-helm@v5
-
-      - name: Package Helm chart
+      - name: Compute next version
+        env:
+          BUMP: ${{ inputs.bump }}
         run: |
-          helm package charts/rollout-ecr-tagger \
-            --version "${GITHUB_REF_NAME#v}" \
-            --app-version "${GITHUB_REF_NAME}"
+          current="$(sed -n 's/^version: //p' charts/rollout-ecr-tagger/Chart.yaml)"
+          IFS=. read -r major minor patch <<< "${current%%-*}"
+          case "$BUMP" in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="${major}.$((minor + 1)).0" ;;
+            patch) version="${major}.${minor}.$((patch + 1))" ;;
+          esac
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null \
+            || git ls-remote --exit-code --heads origin "release/v$version" >/dev/null; then
+            echo "::error::v$version ya existe como tag o rama release/"; exit 1
+          fi
+          echo "Versión actual $current -> v$version ($BUMP)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Create GitHub release
+      - name: Bump chart and image
+        run: |
+          sed -i -E "s/^version: .*/version: ${VERSION}/; s/^appVersion: .*/appVersion: \"v${VERSION}\"/" \
+            charts/rollout-ecr-tagger/Chart.yaml
+          sed -i -E "s#^(  repository: ).*#\1${IMAGE}#" charts/rollout-ecr-tagger/values.yaml
+          sed -i -E "s#^( +image: ).*rollout-ecr-tagger:.*#\1${IMAGE}:v${VERSION}#" config/operator.yaml
+          git diff --stat
+          git diff --quiet && { echo "::error::Nada que cambiar para v${VERSION}"; exit 1; }
+          helm lint charts/rollout-ecr-tagger --strict
+
+      - name: Open pull request
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prerelease=""
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then prerelease="--prerelease"; fi
-          gh release create "${GITHUB_REF_NAME}" rollout-ecr-tagger-*.tgz \
-            --title "${GITHUB_REF_NAME}" --generate-notes ${prerelease}
+          branch="release/v${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "release: v${VERSION}"
+          git push origin "$branch"
+          gh pr create --base trunk --head "$branch" --title "release: v${VERSION}" --body \
+            "Sube el chart a \`${VERSION}\` y la imagen a \`${IMAGE}:v${VERSION}\`.
+
+          Al mergear este PR, el workflow **Publish** sube la imagen a GHCR y crea el GitHub Release \`v${VERSION}\` con el chart empaquetado."

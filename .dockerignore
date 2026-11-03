@@ -1,0 +1,5 @@
+.git
+.claude
+test
+bin/*
+!bin/manager-linux

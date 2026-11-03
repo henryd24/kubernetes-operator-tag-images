@@ -133,17 +133,18 @@ Por defecto solo se instala el CRD de Argo Rollouts (sin controlador ni pods); u
 
 ```bash
 make build
-make docker-build IMAGE=henda24/rollout-ecr-tagger:v0.5.0 VERSION=v0.5.0
-make docker-push IMAGE=henda24/rollout-ecr-tagger:v0.5.0
+make docker-build IMAGE=ghcr.io/henryd24/rollout-ecr-tagger:v0.5.0 VERSION=v0.5.0
 ```
 
 ## Release
 
-Al hacer push de un tag `vX.Y.Z`, el workflow `release` construye y publica la imagen multi-arquitectura (`linux/amd64`, `linux/arm64`) y crea un GitHub Release con el chart de Helm empaquetado. Requiere los secrets `DOCKERHUB_USERNAME` y `DOCKERHUB_TOKEN` en el repositorio.
+El release tiene dos pasos y la imagen se publica en GitHub Container Registry (`ghcr.io/henryd24/rollout-ecr-tagger`):
 
-```bash
-git tag v0.5.0 && git push origin v0.5.0
-```
+1. **Preparar (manual).** En Actions, ejecuta el workflow `Release` sobre `trunk` y elige `patch`, `minor` o `major`; la versión se calcula a partir de la actual del chart (p. ej. `0.5.0` + `minor` = `0.6.0`). Abre el PR `release/v0.6.0` que sube `version` y `appVersion` del chart, `image.repository` y la imagen de `config/operator.yaml`.
+2. **Publicar (automático).** Al mergear ese PR a `trunk`, el workflow `Publish` construye y sube la imagen multi-arquitectura (`linux/amd64`, `linux/arm64`) a GHCR y crea el GitHub Release `v0.6.0` con el chart empaquetado.
+
+Requisitos: en Settings > Actions > General, activar «Allow GitHub Actions to create and approve pull requests». El PR lo abre `GITHUB_TOKEN`, así que no dispara el CI por sí solo; ciérralo y reábrelo para que corra. La primera vez, hay que hacer público el paquete en GHCR (Packages > Package settings) para que los clusters puedan descargar la imagen sin credenciales.
+
 
 ## Deploy con Helm (recomendado)
 
