@@ -1,6 +1,7 @@
 name: Release
 
-# Manual. Prepara una versión: sube la versión del chart y de la imagen y abre un
+# Manual. Prepara una versión (patch, minor o major sobre la versión actual del
+# chart): sube la versión del chart y de la imagen y abre un
 # PR contra trunk. Al mergearlo, el workflow "Publish" publica la imagen en GHCR
 # y crea el GitHub Release.
 #
@@ -10,10 +11,12 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Versión a publicar, sin la v (p. ej. 0.6.0 o 0.6.0-rc.1)"
+      bump:
+        description: "Qué parte de la versión actual del chart subir"
         required: true
-        type: string
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
@@ -29,17 +32,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Validate version
+      - name: Compute next version
         env:
-          VERSION_INPUT: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
         run: |
-          version="${VERSION_INPUT#v}"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
-            || { echo "::error::Versión inválida: '$VERSION_INPUT'"; exit 1; }
+          current="$(sed -n 's/^version: //p' charts/rollout-ecr-tagger/Chart.yaml)"
+          IFS=. read -r major minor patch <<< "${current%%-*}"
+          case "$BUMP" in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="${major}.$((minor + 1)).0" ;;
+            patch) version="${major}.${minor}.$((patch + 1))" ;;
+          esac
           if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null \
             || git ls-remote --exit-code --heads origin "release/v$version" >/dev/null; then
             echo "::error::v$version ya existe como tag o rama release/"; exit 1
           fi
+          echo "Versión actual $current -> v$version ($BUMP)"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Bump chart and image

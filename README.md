@@ -140,7 +140,7 @@ make docker-build IMAGE=ghcr.io/henryd24/rollout-ecr-tagger:v0.5.0 VERSION=v0.5.
 
 El release tiene dos pasos y la imagen se publica en GitHub Container Registry (`ghcr.io/henryd24/rollout-ecr-tagger`):
 
-1. **Preparar (manual).** En Actions, ejecuta el workflow `Release` sobre `trunk` con la versión (p. ej. `0.6.0`). Abre el PR `release/v0.6.0` que sube `version` y `appVersion` del chart, `image.repository` y la imagen de `config/operator.yaml`.
+1. **Preparar (manual).** En Actions, ejecuta el workflow `Release` sobre `trunk` y elige `patch`, `minor` o `major`; la versión se calcula a partir de la actual del chart (p. ej. `0.5.0` + `minor` = `0.6.0`). Abre el PR `release/v0.6.0` que sube `version` y `appVersion` del chart, `image.repository` y la imagen de `config/operator.yaml`.
 2. **Publicar (automático).** Al mergear ese PR a `trunk`, el workflow `Publish` construye y sube la imagen multi-arquitectura (`linux/amd64`, `linux/arm64`) a GHCR y crea el GitHub Release `v0.6.0` con el chart empaquetado.
 
 Requisitos: en Settings > Actions > General, activar «Allow GitHub Actions to create and approve pull requests». El PR lo abre `GITHUB_TOKEN`, así que no dispara el CI por sí solo; ciérralo y reábrelo para que corra. La primera vez, hay que hacer público el paquete en GHCR (Packages > Package settings) para que los clusters puedan descargar la imagen sin credenciales.
