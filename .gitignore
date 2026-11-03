@@ -4,3 +4,8 @@ coverage.out
 output/
 **.tar
 tests/
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log

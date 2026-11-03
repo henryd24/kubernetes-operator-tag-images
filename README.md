@@ -102,6 +102,33 @@ make helm-lint          # requiere helm
 go run ./cmd/main.go --leader-elect=false
 ```
 
+### Probar en un cluster local con kind
+
+Flujo rapido para probar el operador contra ECR real sin publicar ninguna imagen: el binario se compila en tu maquina, se carga en kind con `kind load` y las credenciales AWS locales se guardan en un ConfigMap (`rollout-ecr-tagger-aws-local`) que el operador lee via `envFrom`.
+
+Requisitos: `docker`, `kind`, `kubectl`, `go` y credenciales AWS (perfil o variables de entorno). La imagen indicada en `TEST_IMAGE` debe existir ya en ECR.
+
+```bash
+export AWS_PROFILE=mi-perfil   # o AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+make kind-test TEST_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:v1.0.0
+make kind-healthy              # simula el Rollout Healthy y dispara el retag
+make kind-logs                 # logs del operador
+make kind-tags TEST_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:v1.0.0
+```
+
+| Target | Que hace |
+|---|---|
+| `kind-test` | Flujo completo: cluster, CRD de Rollouts, build, credenciales, deploy y Rollout de prueba |
+| `kind-redeploy` | Recompila y redespliega el operador tras cambiar codigo |
+| `kind-creds` | Refresca el ConfigMap de credenciales y reinicia el operador (util con SSO/STS expiradas) |
+| `kind-events` | Muestra el Rollout de prueba con sus anotaciones y eventos |
+| `kind-down` | Elimina el cluster kind |
+| `kind-help` | Lista todos los targets y variables |
+
+Por defecto solo se instala el CRD de Argo Rollouts (sin controlador ni pods); usa `ARGO_FULL=true` para instalar el controlador completo. Variables utiles: `KIND_CLUSTER`, `KIND_IMAGE`, `AWS_REGION`, `TARGET_ROLE_ARN`, `TEST_NAMESPACE`, `TEST_ROLLOUT`.
+
+> Un ConfigMap guarda las credenciales en texto plano: usalo solo en clusters locales de desarrollo. Mas detalle en [TESTING.md](TESTING.md).
+
 ## Build
 
 ```bash
