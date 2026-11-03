@@ -251,6 +251,10 @@ kubectl delete -f config/operator.yaml
 - Si usas Secret, verifica que el Secret existe: `kubectl get secret aws-credentials -n rollout-ecr-tagger-system`
 - Comprueba variables de entorno: `kubectl exec -it pod/... -n rollout-ecr-tagger-system -- env | grep AWS`
 
+## Testing en local contra ECR real
+
+Para ejecutar el operador en tu máquina contra un clúster y un ECR reales (sin construir imágenes), con Terraform para crear y destruir la infraestructura, sigue [test/terraform/README.md](test/terraform/README.md).
+
 ## Testing en local (sin cluster)
 
 Para probar el operador sin Kubernetes:
