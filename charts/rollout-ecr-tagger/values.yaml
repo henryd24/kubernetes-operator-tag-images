@@ -1,5 +1,5 @@
 image:
-  repository: henda24/rollout-ecr-tagger
+  repository: ghcr.io/henryd24/rollout-ecr-tagger
   # Defaults to the chart appVersion.
   tag: ""
   pullPolicy: IfNotPresent
